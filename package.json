@@ -1,0 +1,25 @@
+{
+  "name": "playcity",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types",
+    "test": "npm run test:game && npm run test:worker",
+    "test:game": "vitest run --config vitest.game.config.mts",
+    "test:worker": "vitest run --config vitest.worker.config.mts",
+    "lint:cf": "bash scripts/cf-lint.sh"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.4.0",
+    "@cloudflare/workers-types": "^5.20261009.1",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3",
+    "wrangler": "^4.149.0"
+  },
+  "allowScripts": {
+    "workerd@1.20261006.1": true,
+    "esbuild@0.28.2": true,
+    "sharp@0.35.5": true
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "playcity", "runtimeExecutable": "npx", "runtimeArgs": ["wrangler", "dev", "--port", "8788"], "port": 8788 }
+  ]
+}

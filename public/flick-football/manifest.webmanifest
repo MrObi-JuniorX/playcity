@@ -1,0 +1,12 @@
+{
+  "name": "Flick Football",
+  "short_name": "Flick",
+  "description": "Table football with bottle caps. Play the computer, a friend, or anyone online.",
+  "start_url": "/flick-football/",
+  "scope": "/flick-football/",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0d1517",
+  "theme_color": "#0d1517",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#060a12">
+<meta name="description" content="Eleven-a-side night football in the browser. Pick a manager, a formation and a playstyle, then play it with your thumbs.">
+<title>Floodlight FC · playcity</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;900&family=Saira+Semi+Condensed:wght@400;600;700&display=swap">
+<style>
+/* Layout: full-bleed WebGPU pitch; glass HUD floats over it; thumbs own the two bottom corners. */
+:root{
+  color-scheme: dark;
+  --night:#060a12;          /* stadium sky */
+  --glass:rgba(9,14,26,.66);
+  --glass-hi:rgba(22,32,54,.8);
+  --line:rgba(214,226,255,.18);
+  --ink:#eef3ff;
+  --dim:#94a3bf;
+  --flood:#ffd24a;          /* floodlight amber — the one accent */
+  --t0:#1fbf6a;             /* home kit */
+  --t1:#e3444f;             /* away kit */
+  --good:#5be08f;
+  --bad:#ff6a5e;
+  --display:"Big Shoulders Display","Arial Narrow",Impact,sans-serif;
+  --ui:"Saira Semi Condensed","Roboto Condensed","Arial Narrow",system-ui,sans-serif;
+}
+*,*::before,*::after{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--night);color:var(--ink);overflow:hidden;font:14px var(--ui);-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;touch-action:none}
+[hidden]{display:none!important}
+#stage{position:fixed;inset:0;background:var(--night)}
+#stage canvas{display:block;width:100%;height:100%}
+button,select,input{font-family:var(--ui);color:var(--ink)}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--flood);outline-offset:2px}
+
+/* ---------- HUD ---------- */
+#hud{position:fixed;inset:0;pointer-events:none}
+.score{position:absolute;left:50%;top:calc(env(safe-area-inset-top,0px) + 8px);transform:translateX(-50%);display:flex;align-items:stretch;background:var(--glass);border:1px solid var(--line);border-radius:6px;overflow:hidden;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);font-family:var(--display);font-weight:900;letter-spacing:.04em}
+.score .tm{display:flex;align-items:center;gap:6px;padding:4px 10px;font-size:17px}
+.score .tm i{width:6px;height:18px;border-radius:2px;display:block}
+.score .tm0 i{background:var(--t0)} .score .tm1 i{background:var(--t1)}
+.score b{min-width:26px;display:grid;place-items:center;font-size:24px;background:rgba(255,255,255,.06);font-variant-numeric:tabular-nums}
+.score .clock{display:grid;place-items:center;padding:0 10px;font-size:16px;color:var(--flood);min-width:46px;font-variant-numeric:tabular-nums;font-family:var(--ui);font-weight:700}
+#pauseBtn{pointer-events:auto;position:absolute;right:calc(env(safe-area-inset-right,0px) + 12px);top:calc(env(safe-area-inset-top,0px) + 8px);width:48px;height:40px;border-radius:6px;background:var(--glass);border:1px solid var(--line);font-weight:700;font-size:14px;letter-spacing:.1em}
+/* the manager's levers: attack/defence dial, sub-tactic, offside trap */
+#levers{pointer-events:auto;position:absolute;left:calc(env(safe-area-inset-left,0px) + 12px);top:calc(env(safe-area-inset-top,0px) + 40px);display:flex;gap:4px;align-items:stretch;touch-action:none}
+#levers button{appearance:none;min-width:40px;height:38px;padding:0 8px;border-radius:5px;background:var(--glass);border:1px solid var(--line);font-weight:700;font-size:12px;letter-spacing:.06em}
+#levers button:active{border-color:var(--flood);background:var(--glass-hi)}
+#levers button.cool{opacity:.4}
+#levers .dial{display:flex;align-items:center;border:1px solid var(--line);border-radius:5px;background:var(--glass);overflow:hidden}
+#levers .dial button{border:0;border-radius:0;background:transparent;min-width:38px;font-size:16px}
+#lvl{min-width:74px;text-align:center;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+#lvl[data-v="-2"],#lvl[data-v="-1"]{color:#7fd4f0} #lvl[data-v="1"],#lvl[data-v="2"]{color:var(--flood)}
+#radar{position:absolute;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 8px);transform:translateX(-50%);width:140px;height:92px;border-radius:6px;background:rgba(6,20,12,.55);border:1px solid var(--line)}
+#pinfo{position:absolute;left:calc(env(safe-area-inset-left,0px) + 14px);bottom:calc(env(safe-area-inset-bottom,0px) + 168px);display:flex;flex-direction:column;gap:3px;font-size:13px;text-shadow:0 1px 3px #000}
+#pinfo .nm{font-weight:700;letter-spacing:.04em}
+#pinfo .nm em{font-style:normal;font-family:var(--display);font-size:20px;color:var(--flood);margin-right:6px}
+#pmeta{font-size:11px;letter-spacing:.06em;color:var(--dim);font-weight:700}
+#pmeta b{color:var(--flood);letter-spacing:2px;font-weight:400}
+.stam{position:relative;width:110px;height:5px;border-radius:3px;background:rgba(255,255,255,.14);overflow:hidden}
+.stam i{display:block;height:100%;width:100%;background:var(--good)}
+.stam u{position:absolute;top:0;bottom:0;right:0;background:rgba(255,106,94,.55)}   /* fitness lost: the part of the bar that cannot refill */
+
+/* ---------- Touch controls ---------- */
+#controls{position:fixed;inset:0;pointer-events:none}
+#lzone{position:absolute;left:0;top:max(18%,80px);bottom:0;width:44%;pointer-events:auto;touch-action:none}
+#rzone{position:absolute;right:0;top:max(18%,80px);bottom:0;width:56%;pointer-events:auto;touch-action:none}
+#stick{position:fixed;width:120px;height:120px;margin:-60px 0 0 -60px;border-radius:50%;border:2px solid rgba(255,255,255,.22);background:radial-gradient(circle,rgba(255,255,255,.06),rgba(255,255,255,.02));left:calc(env(safe-area-inset-left,0px) + 92px);top:calc(100% - 92px - env(safe-area-inset-bottom,0px));opacity:.45;transition:opacity .15s}
+#stick.on{opacity:1}
+#knob{position:absolute;left:50%;top:50%;width:52px;height:52px;margin:-26px 0 0 -26px;border-radius:50%;background:rgba(238,243,255,.85);box-shadow:0 2px 10px rgba(0,0,0,.5)}
+#pad{position:absolute;right:calc(env(safe-area-inset-right,0px) + 8px);bottom:calc(env(safe-area-inset-bottom,0px) + 6px);width:270px;height:220px;transform:scale(var(--padScale,1));transform-origin:100% 100%}
+.b{position:absolute;pointer-events:auto;touch-action:none;border-radius:50%;border:2px solid rgba(255,255,255,.28);background:var(--glass);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);display:grid;place-items:center;padding:0;font-weight:700;font-size:11px;letter-spacing:.08em;transition:transform .06s,background .1s,border-color .1s}
+.b span{pointer-events:none}
+.b.down{transform:scale(.92);background:var(--glass-hi);border-color:var(--flood)}
+.b.big{width:86px;height:86px;right:14px;bottom:32px;font-size:13px;border-color:rgba(255,210,74,.6)}
+#bPass{width:66px;height:66px;right:108px;bottom:12px}
+#bThrough{width:60px;height:60px;right:104px;bottom:100px}
+#bLoft{width:60px;height:60px;right:22px;bottom:132px}
+#bSkill{width:54px;height:54px;right:180px;bottom:84px;border-style:dashed}
+#bSprint{width:76px;height:46px;border-radius:24px;right:186px;bottom:14px}
+#controls.defend .b{border-color:rgba(255,210,74,.35)}
+#controls.defend .b span{color:var(--flood)}
+#controls.defend .b.big{border-color:var(--flood)}
+#bSprint .st{position:absolute;left:10px;right:10px;bottom:6px;height:3px;border-radius:2px;background:rgba(255,255,255,.12);overflow:hidden}
+#bSprint .st i{display:block;height:100%;background:var(--good)}
+/* the swipe hint that appears over a held button */
+#swipe{position:fixed;left:0;top:0;pointer-events:none;font-size:10px;font-weight:700;letter-spacing:.1em;color:var(--ink);text-shadow:0 1px 3px #000}
+#swipe span{position:absolute;white-space:nowrap;transform:translate(-50%,-50%);padding:2px 6px;border-radius:4px;background:rgba(6,10,18,.72);border:1px solid var(--line)}
+#swipe span.on{border-color:var(--flood);color:var(--flood)}
+/* keyboard players: the on-screen thumb controls get out of the way until a finger touches the screen */
+body.kb #pad,body.kb #stick{display:none}
+@media (max-height:420px){#pad{--padScale:.86}#pinfo{bottom:calc(env(safe-area-inset-bottom,0px) + 142px)}}
+@media (max-height:340px){#pad{--padScale:.74}#radar{display:none}}
+@media (orientation:portrait){#lzone,#rzone{top:45%}#radar{bottom:auto;top:calc(env(safe-area-inset-top,0px) + 84px);left:auto;right:12px;transform:none;width:110px;height:72px}}
+
+/* shot gauge floats above the player */
+#gauge{position:fixed;left:0;top:0;width:96px;height:10px;margin-left:-48px;border-radius:5px;background:rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.35);pointer-events:none}
+#gauge em{position:absolute;left:68%;width:18%;top:0;bottom:0;background:rgba(91,224,143,.35);border-left:1px solid var(--good);border-right:1px solid var(--good)}
+#gfill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:5px;background:linear-gradient(90deg,#fff 0%,var(--flood) 70%,#ff6a3d 100%)}
+#gauge .mode{position:absolute;left:0;right:0;top:-16px;text-align:center;font-size:10px;letter-spacing:.14em;color:var(--flood);font-weight:700}
+
+#banner{position:fixed;left:0;right:0;top:30%;text-align:center;pointer-events:none;opacity:0;transform:scale(.8);transition:opacity .25s,transform .35s cubic-bezier(.2,1.6,.4,1)}
+#banner.show{opacity:1;transform:scale(1)}
+#banner .big{font-family:var(--display);font-weight:900;font-size:clamp(46px,12vw,110px);line-height:.9;letter-spacing:.02em;color:var(--flood);text-shadow:0 0 30px rgba(255,180,40,.55),0 4px 0 rgba(0,0,0,.4)}
+#banner .sub{margin-top:6px;font-size:15px;letter-spacing:.2em;text-transform:uppercase;text-shadow:0 1px 4px #000}
+#banner.cool .big{color:var(--ink);font-size:clamp(34px,8vw,70px);text-shadow:0 0 18px rgba(160,200,255,.4)}
+#skillTag{position:fixed;left:50%;top:calc(env(safe-area-inset-top,0px) + 54px);transform:translateX(-50%);max-width:92vw;text-align:center;font-family:var(--display);font-weight:900;font-size:22px;letter-spacing:.08em;color:var(--ink);opacity:0;transition:opacity .2s;pointer-events:none;text-shadow:0 2px 6px #000}
+#skillTag.show{opacity:1}
+#skillTag b{color:var(--good)} #skillTag s{color:var(--bad);text-decoration:none}
+
+/* ---------- Menu ---------- */
+.overlay{position:fixed;inset:0;display:grid;place-items:center;background:radial-gradient(ellipse at 50% 0%,rgba(255,210,74,.12),transparent 55%),rgba(4,7,14,.78);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);overflow:auto;touch-action:pan-y;padding:calc(env(safe-area-inset-top,0px) + 16px) max(16px,env(safe-area-inset-right,0px)) calc(env(safe-area-inset-bottom,0px) + 16px) max(16px,env(safe-area-inset-left,0px))}
+.card{width:min(900px,100%);display:grid;grid-template-columns:1.1fr 1fr;gap:22px;align-items:start}
+@media (max-width:700px){.card{grid-template-columns:1fr}}
+.home{display:inline-block;margin-bottom:10px;color:var(--dim);font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;text-decoration:none}
+.home:hover,.home:focus-visible{color:var(--flood)}
+.brand h1{margin:0;font-family:var(--display);font-weight:900;font-size:clamp(52px,9vw,96px);line-height:.86;letter-spacing:.01em;text-wrap:balance}
+.brand h1 span{color:var(--flood);display:block}
+.brand p{margin:10px 0 0;color:var(--dim);font-size:15px;max-width:40ch}
+.fixture{margin-top:16px;display:grid;gap:6px}
+.side{display:grid;grid-template-columns:auto 1fr auto;gap:2px 10px;align-items:center;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--glass)}
+.side i{grid-row:span 2;width:8px;height:34px;border-radius:2px}
+.side b{font-family:var(--display);font-weight:900;font-size:22px;letter-spacing:.03em;line-height:1}
+.side small{grid-column:2;color:var(--dim);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.side em{grid-row:1/span 2;grid-column:3;font-style:normal;font-family:var(--display);font-weight:900;font-size:26px;color:var(--flood)}
+.side .mini{grid-row:1/span 2;grid-column:3;display:flex;align-items:center;gap:8px}
+.cta{margin-top:16px;display:flex;gap:10px;flex-wrap:wrap}
+.go{appearance:none;border:0;border-radius:6px;background:var(--flood);color:#1a1405;font-family:var(--display);font-weight:900;font-size:26px;letter-spacing:.06em;padding:10px 26px;cursor:pointer}
+.ghost{appearance:none;border:1px solid var(--line);border-radius:6px;background:transparent;font-weight:700;font-size:14px;letter-spacing:.08em;padding:10px 16px;cursor:pointer;text-transform:uppercase}
+.ghost.sm{padding:5px 10px;font-size:11px}
+.rend{margin-top:14px;font-size:12px;color:var(--dim);letter-spacing:.06em}
+.rend b{color:var(--flood);font-weight:700}
+.panel{background:var(--glass);border:1px solid var(--line);border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.row{display:flex;flex-direction:column;gap:6px;min-width:0}
+.row>label,.lab{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);font-weight:700}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.seg{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.seg button{flex:1;appearance:none;border:0;background:transparent;padding:8px 4px;font-size:13px;font-weight:600;cursor:pointer;border-right:1px solid var(--line);min-width:0}
+.seg button:last-child{border-right:0}
+.seg button[aria-pressed="true"]{background:rgba(255,210,74,.16);color:var(--flood)}
+select{appearance:none;width:100%;min-height:38px;padding:6px 28px 6px 10px;border-radius:6px;border:1px solid var(--line);background:rgba(255,255,255,.04) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2394a3bf'/%3E%3C/svg%3E") no-repeat right 10px center;font-size:14px;font-weight:600;text-overflow:ellipsis}
+select option{background:#0d1424;color:var(--ink)}
+.slide{display:grid;grid-template-columns:5.2em 1fr 2em;gap:8px;align-items:center;font-size:12px;color:var(--dim)}
+.slide output{color:var(--ink);font-weight:700;text-align:right;font-variant-numeric:tabular-nums}
+input[type=range]{width:100%;accent-color:var(--flood);touch-action:pan-x}
+.note{margin:0;color:var(--dim);font-size:12px;line-height:1.4}
+details{border-top:1px solid var(--line);padding-top:10px}
+summary{cursor:pointer;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);font-weight:700}
+.keys{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:10px 0 0;font-size:13px}
+.keys dt{color:var(--flood);font-weight:700;white-space:nowrap}
+.keys dd{margin:0;color:var(--ink)}
+.keys .h{grid-column:1/-1;margin-top:8px;font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);font-weight:700}
+.stats{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;margin-top:8px}
+.stats td{padding:5px 4px;border-bottom:1px solid var(--line);font-size:14px}
+.stats td:first-child,.stats td:last-child{font-weight:700;width:3.5em}
+.stats td:last-child{text-align:right}
+.stats td:nth-child(2){text-align:center;color:var(--dim);font-size:12px;letter-spacing:.1em;text-transform:uppercase}
+.result{margin-top:16px;font-family:var(--display);font-weight:900;font-size:24px;letter-spacing:.03em}
+#err{position:fixed;inset:0;display:grid;place-items:center;padding:24px;text-align:center;background:var(--night);color:var(--ink);font-size:15px}
+
+/* ---------- Team screen ---------- */
+#team{place-items:start center}
+.tw{width:min(980px,100%);display:flex;flex-direction:column;gap:12px}
+.th{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.th h2{margin:0;font-family:var(--display);font-weight:900;font-size:34px;letter-spacing:.02em;line-height:1;flex:1}
+.th h2 span{color:var(--flood)}
+.tabs{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--glass)}
+.tabs button{flex:1;appearance:none;border:0;background:transparent;padding:10px 6px;font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;cursor:pointer;border-right:1px solid var(--line)}
+.tabs button:last-child{border-right:0}
+.tabs button[aria-selected="true"]{background:rgba(255,210,74,.16);color:var(--flood)}
+.lu{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.05fr);gap:12px;align-items:start}
+@media (max-width:760px){.lu{grid-template-columns:1fr}}
+.pitch{position:relative;width:100%;aspect-ratio:68/84;border-radius:8px;border:1px solid var(--line);overflow:hidden;
+  background:repeating-linear-gradient(0deg,#2b7533 0 10%,#318039 10% 20%)}
+.pitch::before{content:"";position:absolute;inset:3%;border:2px solid rgba(255,255,255,.4);border-bottom-width:2px}
+.pitch::after{content:"";position:absolute;left:28%;right:28%;bottom:3%;height:15%;border:2px solid rgba(255,255,255,.4);border-bottom:0}
+.chip{position:absolute;transform:translate(-50%,-50%);width:60px;padding:3px 2px 4px;border-radius:6px;border:1px solid rgba(255,255,255,.3);background:rgba(6,10,18,.82);text-align:center;cursor:pointer;line-height:1.15;appearance:none}
+.chip b{display:block;font-family:var(--display);font-weight:900;font-size:18px;line-height:1}
+.chip span{display:block;font-size:11px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chip i{font-style:normal;font-size:10px;font-weight:700;letter-spacing:.06em}
+.chip i+i,.bn>i{font-size:14px;font-weight:900;font-style:normal;line-height:1}
+.chip.sel,.bn.sel{border-color:var(--flood);box-shadow:0 0 0 2px rgba(255,210,74,.5)}
+.chip .c{position:absolute;right:-6px;top:-7px;width:16px;height:16px;border-radius:50%;background:var(--flood);color:#1a1405;font-size:10px;font-weight:900;line-height:16px}
+.f1{color:var(--good)} .f2{color:#b8e06a} .f3{color:#f0913a} .f4{color:var(--bad)}
+.bench{display:grid;gap:5px}
+.bn{appearance:none;display:grid;grid-template-columns:2.2em 2.6em 1fr auto auto;gap:8px;align-items:center;text-align:left;padding:7px 10px;border-radius:6px;border:1px solid var(--line);background:var(--glass);cursor:pointer;font-size:13px}
+.bn b{font-family:var(--display);font-weight:900;font-size:19px}
+.bn em{font-style:normal;color:var(--dim);font-weight:700;font-size:11px;letter-spacing:.06em}
+.bn span{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pc h3{margin:0;font-family:var(--display);font-weight:900;font-size:26px;letter-spacing:.02em;line-height:1}
+.pc h3 em{font-style:normal;color:var(--flood);margin-right:8px}
+.pc .meta{color:var(--dim);font-size:12px;line-height:1.5}
+.pc .meta b{color:var(--ink)}
+.sg{display:grid;grid-template-columns:1fr 1fr;gap:4px 16px}
+@media (max-width:420px){.sg{grid-template-columns:1fr}}
+.sgh{grid-column:1/-1;margin-top:6px;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);font-weight:700}
+.sr{display:grid;grid-template-columns:1fr 2em;gap:6px;align-items:center;font-size:12px}
+.sr span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sr b{text-align:right;font-variant-numeric:tabular-nums}
+.sr u{grid-column:1/-1;height:3px;border-radius:2px;background:rgba(255,255,255,.1);overflow:hidden;text-decoration:none}
+.sr u s{display:block;height:100%;background:var(--flood)}
+.tags{display:flex;flex-wrap:wrap;gap:4px}
+.tags span{font-size:11px;font-weight:600;padding:2px 7px;border-radius:999px;border:1px solid var(--line)}
+.tags span.off{color:var(--dim);border-style:dashed}
+.prof{display:grid;grid-template-columns:1fr 2.2em;gap:8px;align-items:center;font-size:12px}
+.prof u{height:6px;border-radius:3px;background:rgba(255,255,255,.1);overflow:hidden;text-decoration:none}
+.prof u s{display:block;height:100%;background:var(--flood)}
+.prof b{text-align:right}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}
+@media (max-width:760px){.g2{grid-template-columns:1fr}}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:12px;margin:0}
+.kv dt{color:var(--dim)} .kv dd{margin:0;font-weight:600}
+@media (prefers-reduced-motion:reduce){#banner{transition:opacity .2s}.b{transition:none}}
+</style>
+<script type="importmap">
+{"imports":{
+  "three":"https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+  "three/webgpu":"https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.webgpu.js",
+  "three/tsl":"https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.tsl.js",
+  "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"
+}}
+</script>
+</head><body>
+<div id="stage"></div>
+
+<div id="hud" hidden>
+  <div class="score">
+    <span class="tm tm0"><i></i><span id="n0">EKO</span></span><b id="s0">0</b>
+    <span class="clock" id="clock">0'</span>
+    <b id="s1">0</b><span class="tm tm1"><span id="n1">NBK</span><i></i></span>
+  </div>
+  <button id="pauseBtn" aria-label="Pause">II</button>
+  <div id="levers" aria-label="Team instructions">
+    <div class="dial"><button data-l="down" aria-label="More defensive">−</button><span id="lvl" data-v="0">Balanced</span><button data-l="up" aria-label="More attacking">+</button></div>
+    <button data-l="tactic" id="tacBtn" aria-label="Switch sub-tactic">A</button>
+    <button data-l="trap" id="trapBtn" aria-label="Offside trap">TRAP</button>
+  </div>
+  <canvas id="radar" width="280" height="184"></canvas>
+  <div id="pinfo"><span class="nm" id="pname"></span><span id="pmeta"></span><div class="stam"><i id="stam"></i><u id="fit"></u></div></div>
+</div>
+
+<div id="controls" hidden>
+  <div id="lzone"><div id="stick"><div id="knob"></div></div></div>
+  <div id="rzone"></div>
+  <div id="pad">
+    <button class="b" id="bLoft" data-a="loft"><span>LOFT</span></button>
+    <button class="b" id="bThrough" data-a="through"><span>THROUGH</span></button>
+    <button class="b" id="bSkill" data-a="skill"><span>SKILL</span></button>
+    <button class="b" id="bPass" data-a="pass"><span>PASS</span></button>
+    <button class="b big" id="bShoot" data-a="shoot"><span>SHOOT</span></button>
+    <button class="b" id="bSprint" data-a="sprint"><span>SPRINT</span><div class="st"><i id="stam2"></i></div></button>
+  </div>
+</div>
+<div id="swipe" hidden></div>
+
+<div id="gauge" hidden><div class="mode" id="gmode">POWER</div><em></em><i id="gfill"></i></div>
+<div id="banner"><div class="big" id="bBig"></div><div class="sub" id="bSub"></div></div>
+<div id="skillTag"></div>
+
+<div id="menu" class="overlay">
+  <div class="card">
+    <div class="brand">
+      <a class="home" href="/">← playcity</a>
+      <h1>Floodlight<span>FC</span></h1>
+      <p>Eleven-a-side night football. Pick a manager, a shape and a playstyle, then play it with your thumbs.</p>
+      <div class="fixture" id="fixture"></div>
+      <div class="cta">
+        <button class="go" id="startBtn">Kick off</button>
+        <button class="ghost" id="resumeBtn" hidden>Resume</button>
+        <button class="ghost" id="teamBtn">Team and tactics</button>
+      </div>
+      <div id="ftBox" hidden></div>
+    </div>
+    <div class="panel">
+      <div class="row"><label>Difficulty</label><div class="seg" data-k="diff"><button data-v="0">Amateur</button><button data-v="1">Pro</button><button data-v="2">Legend</button></div></div>
+      <div class="row"><label>Match length</label><div class="seg" data-k="len"><button data-v="180">3 min</button><button data-v="300">5 min</button><button data-v="480">8 min</button></div></div>
+      <div class="two">
+        <div class="row"><label>Smart assist</label><div class="seg" data-k="assist"><button data-v="1">On</button><button data-v="0">Off</button></div></div>
+        <div class="row"><label>Offside</label><div class="seg" data-k="offside"><button data-v="1">On</button><button data-v="0">Off</button></div></div>
+      </div>
+      <details>
+        <summary>Touch controls</summary>
+        <dl class="keys">
+          <span class="h">Attacking</span>
+          <dt>Left thumb</dt><dd>Floating stick, drop it anywhere. Double-tap that side to stop dead and face goal</dd>
+          <dt>Shoot</dt><dd>Hold for power, let go in the green band. Slide off the button before letting go: <b>up</b> chip, <b>down</b> finesse, <b>right</b> Stunning shot, <b>left</b> fake shot</dd>
+          <dt>Pass</dt><dd>Aimed with the stick. Slide <b>right</b> for a Stunning pass, <b>left</b> for a one-two (then Pass again to find the runner). Pass during a shot wind-up is a fake</dd>
+          <dt>Through</dt><dd>Into space. Slide <b>up</b> to loft it over the line, <b>right</b> for a Stunning through ball</dd>
+          <dt>Loft</dt><dd>Over the top, or a cross. Slide <b>right</b> for a driven Stunning cross</dd>
+          <dt>Skill</dt><dd>Tap for a body feint, swipe for your four moves, hold to shield the ball</dd>
+          <dt>Sprint</dt><dd>Hold to run. Double-tap to knock the ball on</dd>
+          <dt>Press early</dt><dd>Pass or Shoot while the ball is on its way plays it first time</dd>
+          <span class="h">Defending</span>
+          <dt>Tackle</dt><dd>Tap for a standing tackle, double-tap to slide. From behind it is a foul</dd>
+          <dt>Press</dt><dd>Hold to close down. Slide <b>up</b> to call the whole team to press</dd>
+          <dt>2nd man</dt><dd>Hold to send a teammate. Slide <b>up</b> to bring the keeper out</dd>
+          <dt>Jockey</dt><dd>Hold to stay on your feet against skills</dd>
+          <dt>Switch</dt><dd>Change to the player nearest the ball</dd>
+          <dt>Left thumb</dt><dd>Double-tap for a shoulder charge</dd>
+          <span class="h">Top left</span>
+          <dt>− +</dt><dd>Attack and defence level</dd>
+          <dt>A / B</dt><dd>Switch sub-tactic</dd>
+          <dt>Trap</dt><dd>Offside trap: the back line steps up</dd>
+          <span class="h">Set pieces</span>
+          <dt>Stick</dt><dd>Aim. Shoot for goal on free kicks and penalties, Loft to cross, Pass to play it short</dd>
+        </dl>
+      </details>
+      <details>
+        <summary>Keyboard keys</summary>
+        <dl class="keys">
+          <dt>WASD / arrows</dt><dd>Move · Shift sprint · X stop or shoulder charge</dd>
+          <dt>J K L I</dt><dd>Pass / Shoot / Through / Loft</dd>
+          <dt>U O P</dt><dd>Chip · Finesse · Stunning shot (hold like Shoot) · B fake shot</dd>
+          <dt>C + J L I</dt><dd>Stunning pass, through ball or cross · V one-two · H lofted through</dd>
+          <dt>Space</dt><dd>Feint (jockey when defending) · 1 2 3 4 your moves · Z shield</dd>
+          <dt>[ ] T Y</dt><dd>Level down / up · sub-tactic · offside trap · N team press · G keeper out</dd>
+        </dl>
+      </details>
+    </div>
+  </div>
+</div>
+
+<div id="team" class="overlay" hidden></div>
+<div id="err" hidden></div>
+<script type="module" src="app.js"></script>
+</body></html>
