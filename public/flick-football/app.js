@@ -178,6 +178,7 @@ async function startMatch(fresh) {
     enterPlay();
     applyVis();                                  // Public by default: the match is listed as soon as it starts
     R.kickoffCall(G, 'Kick-off', `${G.names[0]} v ${G.names[1]}. ${who(0)} to start.`);
+    flashGestures();
   } finally { btn.disabled = false; btn.textContent = 'Kick off'; }
 }
 function enterPlay() {
@@ -215,6 +216,7 @@ function paintHud(force) {
                      : `<b>${esc(who(at))}</b> is setting up`;
     }
     else if (!yours) st = `<b>${esc(who(G.turn))}</b> is lining up a flick · ${MODE[G.mode] || ''}`;
+    else if (placing()) st = `<b>${solo ? 'Your' : esc(G.names[G.turn]) + ':'}</b> ${(MODE[G.mode] || '').toLowerCase()} · place the taker, then Ready`;
     else st = `<b>${solo ? 'Your' : esc(G.names[G.turn])}</b> flick · ${MODE[G.mode] || ''}${G.forced !== null ? ' · only the lit taker can play it' : ''}`;
     H$('#ctrl').style.borderTopColor = k.a === '#f4f4f2' ? k.b : k.a;
   } else if (G.phase === 'moving') st = human(1 - G.turn) ? `Ball in play · <b>${solo ? 'your' : esc(G.names[1 - G.turn])}</b> keeper is live` : 'Ball in play';
@@ -224,13 +226,14 @@ function paintHud(force) {
   const can = G.phase === 'ready' && yours;
   const arrHuman = !!G.arrange && G.phase === 'ready' && human(G.arrange.team);
   if (H$('#btnReady').hidden === arrHuman) { H$('#btnReady').hidden = !arrHuman; V.setZoneHint(arrHuman ? arrangeArea(G.arrange.team) : null); }
-  const movable = can && !G.arrange && G.forced !== null && !!G.zone;
+  paintPlacing();
+  const movable = can && !G.arrange && G.forced !== null && !!G.zone && !placing();
   if (H$('#btnMove').hidden === movable) H$('#btnMove').hidden = !movable;
   if (!movable && moveMode) setMoveMode(false);
   autoFrame();
   if (prev.can !== can) { prev.can = can; for (const el of $$('#shot .ctl, #btnMove')) el.style.opacity = can ? 1 : 0.5; }
   const other = who(G.turn);
-  const hint = G.arrange && human(G.arrange.team) ? `Drag a lit cap to move it. The ${G.arrange.mode === 'goalkick' ? 'goal kick' : 'kick-off'} waits for Ready.` : can ? 'Pull back from a lit cap and let go.' : (G.phase === 'ready' ? (ctl[G.turn] === 'ai' ? 'Computer is thinking…' : `${other} is aiming…`) : 'Waiting for the ball to settle…');
+  const hint = G.arrange && human(G.arrange.team) ? `Drag a lit cap to move it. The ${G.arrange.mode === 'goalkick' ? 'goal kick' : 'kick-off'} waits for Ready.` : placing() ? 'Drag the lit taker where you want it, then tap Ready.' : can ? 'Pull back from a lit cap and let go.' : (G.phase === 'ready' ? (ctl[G.turn] === 'ai' ? 'Computer is thinking…' : `${other} is aiming…`) : 'Waiting for the ball to settle…');
   if (!dragging && !keeperDrag && !moveMode && prev.hint !== hint) { prev.hint = hint; H$('#hint').textContent = hint; }
   setText(H$('#btnFlat'), isFlat() ? '3D' : '2D');
   const az = V ? V.getAz() : 0;
@@ -300,7 +303,7 @@ function resetShot() { loftEl.value = 0; curlEl.value = 0; paintShot(); }
 let dragging = null, orbit = null, keeperDrag = null, gesture = null, arrDrag = null;
 const touches = new Map();
 const stage = $('#stage');
-function eligible(p) { return G && G.phase === 'ready' && !G.arrange && human(G.turn) && !flickQueued() && p.kind === 'p' && !p.off && p.team === G.turn && (G.forced === null || G.forced === p.id); }
+function eligible(p) { return G && G.phase === 'ready' && !G.arrange && !placing() && human(G.turn) && !flickQueued() && p.kind === 'p' && !p.off && p.team === G.turn && (G.forced === null || G.forced === p.id); }
 function nearest(x, z, rad) {
   let best = null, bd = rad;
   for (const p of G.w.players) if (eligible(p)) { const d = Math.hypot(p.x - x, p.z - z); if (d < bd) { bd = d; best = p; } }
@@ -329,6 +332,11 @@ stage.addEventListener('pointerdown', e => {
   if (touches.size > 2) return;
   const pt = V.pickPlane(e.clientX, e.clientY), touch = e.pointerType === 'touch';
   if (moveMode && pt && e.button === 0) { takerDrag = { pid: e.pointerId }; queue(G.turn, R.cmd.taker(pt.x, pt.z)); return; }
+  if (placing() && pt && e.button === 0) {          // set piece, before Ready: pick up the taker, or tap where it should stand
+    const tk = G.w.players[G.forced], d = Math.hypot(tk.x - pt.x, tk.z - pt.z), r = R.zoneClamp(G, pt.x, pt.z, tk.id);
+    if (d < (touch ? 6.5 : 4.4)) { takerDrag = { pid: e.pointerId, ox: tk.x - pt.x, oz: tk.z - pt.z }; V.setHover(tk.id); stage.style.cursor = 'grabbing'; return; }
+    if (r && Math.hypot(r[0] - pt.x, r[1] - pt.z) < 1.5) { takerDrag = { pid: e.pointerId, ox: 0, oz: 0 }; queue(G.turn, R.cmd.taker(pt.x, pt.z)); return; }
+  }
   if (G.arrange && human(G.arrange.team) && pt && e.button === 0) {          // kick-off arrangement: pick up one of your caps
     let best = null, bd = touch ? 6 : 4.4;
     for (const q of R.outfield(G, G.arrange.team)) { const dd = Math.hypot(q.x - pt.x, q.z - pt.z); if (dd < bd) { bd = dd; best = q; } }
@@ -365,7 +373,7 @@ stage.addEventListener('pointermove', e => {
     Object.assign(g, { d, mx, my, a }); setCamButtons(V.preset); return;
   }
   if (arrDrag && e.pointerId === arrDrag.pid) { const pt = V.pickPlane(e.clientX, e.clientY); if (pt) queue(arrDrag.team, R.cmd.arrange(arrDrag.id, pt.x + arrDrag.ox, pt.z + arrDrag.oz)); return; }
-  if (takerDrag && e.pointerId === takerDrag.pid) { const pt = V.pickPlane(e.clientX, e.clientY); if (pt) queue(G.turn, R.cmd.taker(pt.x, pt.z)); return; }
+  if (takerDrag && e.pointerId === takerDrag.pid) { const pt = V.pickPlane(e.clientX, e.clientY); if (pt) queue(G.turn, R.cmd.taker(pt.x + (takerDrag.ox || 0), pt.z + (takerDrag.oz || 0))); return; }
   if (keeperDrag && e.pointerId === keeperDrag.pid) {
     const pt = V.pickPlane(e.clientX, e.clientY);
     if (pt) queue(keeperDrag.t, R.cmd.keeperTo(pt.x + keeperDrag.ox, pt.z + keeperDrag.oz));
@@ -387,6 +395,9 @@ stage.addEventListener('pointermove', e => {
     V.orbit(-dx * 0.006, dy * 0.005);
     orbit.vaz = 0.7 * (orbit.vaz || 0) + 0.3 * (-dx * 0.006 / (dtm / 1000)); orbit.vel = 0.7 * (orbit.vel || 0) + 0.3 * (dy * 0.005 / (dtm / 1000));
     orbit.x = e.clientX; orbit.y = e.clientY; orbit.t = now; setCamButtons(V.preset);
+  } else if (!e.buttons && e.pointerType !== 'touch' && placing()) {
+    const pt = V.pickPlane(e.clientX, e.clientY), tk = G.w.players[G.forced];
+    stage.style.cursor = pt && Math.hypot(tk.x - pt.x, tk.z - pt.z) < 4.4 ? 'grab' : 'default';
   } else if (!e.buttons && e.pointerType !== 'touch') {
     const pt = V.pickPlane(e.clientX, e.clientY), p = pt ? nearest(pt.x, pt.z, 4.4) : null, k = !p && pt ? nearestKeeper(pt.x, pt.z, 5) : null;
     const hv = p ? p.id : k ? k.id : -1;
@@ -399,7 +410,7 @@ function pointerEnd(e) {
   touches.delete(e.pointerId);
   if (gesture && touches.size < 2) { gesture = null; return; }
   if (arrDrag && e.pointerId === arrDrag.pid) { arrDrag = null; V.setHover(-1); stage.style.cursor = 'default'; return; }
-  if (takerDrag && e.pointerId === takerDrag.pid) { setMoveMode(false); return; }
+  if (takerDrag && e.pointerId === takerDrag.pid) { if (moveMode) setMoveMode(false); else { takerDrag = null; stage.style.cursor = 'default'; } return; }
   if (keeperDrag && e.pointerId === keeperDrag.pid) { endKeeperDrag(); stage.style.cursor = 'default'; prev.hint = null; return; }
   if (dragging && e.pointerId === dragging.pid) {
     const d = dragging, p = G.w.players[d.id];
@@ -484,6 +495,61 @@ function setMoveMode(on) {
 }
 $('#btnMove').onclick = () => setMoveMode(!moveMode);
 
+/* ---------- set pieces: place the taker first, then Ready ----------
+   People did not find "Move taker". So every set piece you take (free kick, corner, goal kick, throw-in, penalty)
+   starts with the taker picked up: the yellow area shows where it may stand, and dragging the lit cap (or tapping
+   inside the area) moves it. A small card beside the cap says so and carries the Ready button; after Ready you pull
+   back and flick as usual. The same card carries Ready while you arrange your caps for a kick-off or a goal kick.
+   Placing is only on this screen: the moves go out as ordinary taker commands, so the other side sees the cap move. */
+const place = { key: '', on: false };
+function placeKey() {
+  if (!G || mode !== 'play' || G.phase !== 'ready' || G.forced === null || !G.zone || G.arrange || G.mode === 'kickoff' || !human(G.turn) || net.watch) return '';
+  return `${G.mode}:${G.turn}:${G.forced}:${Math.round(G.w.ball.x * 10)},${Math.round(G.w.ball.z * 10)}`;
+}
+const placing = () => place.on && !!place.key && place.key === placeKey();
+function paintPlacing() {
+  const k = placeKey();
+  if (k === place.key) return;
+  const was = placing();
+  place.key = k; place.on = !!k;
+  if (place.on) { if (moveMode) setMoveMode(false); V.setZoneHint(G.zone); V.setHover(G.forced); prev.hint = null; }
+  else if (was && !moveMode) { V.setZoneHint(null); V.setHover(-1); }
+}
+function setReady() {
+  if (G && G.arrange && human(G.arrange.team)) { $('#btnReady').click(); return; }
+  if (!placing()) return;
+  place.on = false; takerDrag = null; stage.style.cursor = 'default';
+  V.setZoneHint(null); V.setHover(-1); prev.hint = null; paintCard();
+}
+$('#setReady').onclick = e => { e.stopPropagation(); setReady(); };
+/* Keep the card beside its cap, on the side away from the ball, inside the board. Called every frame. */
+function paintCard() {
+  const card = $('#setCard'), arr = !!(G && G.arrange && G.phase === 'ready' && human(G.arrange.team) && mode === 'play');
+  const show = !!V && (placing() || arr);
+  if (card.hidden === show) { card.hidden = !show; if (show) $('#setCardTxt').textContent = arr ? 'Drag your caps into place' : 'Drag to move the taker'; }
+  if (!show) return;
+  const b = G.w.ball, at = arr ? b : G.w.players[G.forced];
+  const box = $('#board').getBoundingClientRect(), S = V.toScreen(at.x, 0, at.z), B = V.toScreen(b.x, 0, b.z);
+  let dx = S.x - B.x, dy = S.y - B.y; const l = Math.hypot(dx, dy);
+  if (arr || l < 4) { dx = 0; dy = -1; } else { dx /= l; dy /= l; }
+  const w = card.offsetWidth, h = card.offsetHeight, gap = 26 + Math.abs(dx) * w / 2 + Math.abs(dy) * h / 2;   // clear of the cap, whichever side
+  const x = Math.max(w / 2 + 8, Math.min(box.width - w / 2 - 8, S.x - box.left + dx * gap));
+  const y = Math.max(h / 2 + 8, Math.min(box.height - h / 2 - 8, S.y - box.top + dy * gap));
+  const key = Math.round(x) + ',' + Math.round(y);
+  if (card.dataset.at !== key) { card.dataset.at = key; card.style.left = x + 'px'; card.style.top = y + 'px'; }
+}
+
+/* ---------- view tips: shown for about three seconds as a match starts ---------- */
+let tipT = 0;
+function flashGestures() {
+  const el = $('#gestTip');
+  el.classList.toggle('mouse', !PHONE);
+  clearTimeout(tipT); el.hidden = false; void el.offsetWidth; el.classList.add('on');
+  const hide = () => { clearTimeout(tipT); el.classList.remove('on'); tipT = setTimeout(() => { el.hidden = true; }, 350); stage.removeEventListener('pointerdown', hide); };
+  tipT = setTimeout(hide, 2700);
+  stage.addEventListener('pointerdown', hide);            // touching the table means they are off: get out of the way
+}
+
 /* ---------- view panel ---------- */
 const isFlat = () => V && V.getCam().tilt > 0.93;
 $('#btnFlat').onclick = () => { if (!V) return; const p = isFlat() ? 'broadcast' : 'top'; V.setPreset(p); setCamButtons(p); syncCam(true); };
@@ -562,6 +628,7 @@ window.addEventListener('keydown', e => {
   }
   if (e.code === 'Escape') { if (dragging || keeperDrag || moveMode) { cancelDrag(); if (moveMode) setMoveMode(false); } else toggleMenu(); }
   if (e.code === 'KeyM' && !$('#btnMove').hidden) setMoveMode(!moveMode);
+  if ((e.code === 'Enter' || e.code === 'NumpadEnter') && !$('#setCard').hidden && e.target.tagName !== 'BUTTON') { e.preventDefault(); setReady(); }
   if (V && !e.repeat) {
     if (e.code === 'KeyQ') { V.orbit(0.2, 0); setCamButtons(V.preset); }
     if (e.code === 'KeyE') { V.orbit(-0.2, 0); setCamButtons(V.preset); }
@@ -637,7 +704,7 @@ $('#btnHelp').onclick = () => { $('#help').hidden = false; };
 /* ---------- pause menu: keep playing, end now with a result, or quit to team selection ---------- */
 function showHud(on) { $('#topbar').hidden = !on; $('#ctrl').hidden = !on; $('#btnBest').hidden = !on; if (V) V.resize(); }
 function quitToSetup() {
-  S.stopIntro(); ATM.stop(); keepAwake(false); exitFullscreen();
+  S.stopIntro(); ATM.stop(); keepAwake(false); exitFullscreen(); $('#setCard').hidden = true; place.on = false;
   leaveOnline('You left the match.');
   $('#menuOv').hidden = true; $('#breakOv').hidden = true; $('#viewPanel').hidden = true; $('#btnView').setAttribute('aria-expanded', 'false');
   showHud(false); $('#setup').hidden = false; mode = 'setup'; net.vis = 'public'; openFirst = true; refreshOpenNow(); cancelDrag(); makeGame(); V.setPreset('free', true);
@@ -673,34 +740,52 @@ function loadName() {
   return n || 'Player ' + (1000 + (crypto.getRandomValues(new Uint16Array(1))[0] % 9000));
 }
 function saveName(n) { net.name = (n || '').trim().slice(0, 24) || net.name; try { localStorage.setItem('pc-name', net.name); } catch (e) { /* ignore */ } }
+/* Arriving to play (an invite link, or Play on someone open to challengers): the name the host and everyone
+   watching will see comes first. It is asked once per game in this tab, so a refresh goes straight back in.
+   The Join tap also counts as the tap that phones need before they allow full screen. */
+function askName(code, then) {
+  const flag = 'flick-n-' + code;
+  let named = false; try { named = !!sessionStorage.getItem(flag); } catch (e) { /* private mode */ }
+  if (named) { enterFullscreen(); then(); return; }
+  let typed = ''; try { typed = localStorage.getItem('pc-name') || localStorage.getItem('whot-name') || ''; } catch (e) { /* ignore */ }
+  const ov = $('#nameOv'), inp = $('#nameIn');
+  $('#nameCode').textContent = code;
+  inp.value = typed; ov.hidden = false; inp.focus(); inp.select();
+  $('#nameForm').onsubmit = e => {
+    e.preventDefault(); ov.hidden = true;
+    if (inp.value.trim()) saveName(inp.value);
+    try { sessionStorage.setItem(flag, '1'); } catch (x) { /* ignore */ }
+    enterFullscreen(); then();
+  };
+  $('#nameCancel').onclick = () => { ov.hidden = true; refreshOpenNow(); };
+}
 
 /* ----- holding a room: invite link and quick-match listing ----- */
 function ensureRoom() {
   if (net.room) return net.room;
   const room = net.room = Net.host({
     name: net.name,
-    onOpen: code => { paintOnline(); if (net.open) listInLobby(); },
+    onOpen: code => {
+      if (net.lobby && net.lobby.code !== code) unlist();      // the code changed (it was taken): list the new one
+      paintOnline(); paintNet(); if (net.open) listInLobby();
+    },
+    onDown: () => { paintOnline(); paintNet(); },              // it reconnects by itself, under the same code
     onKnock: m => onKnock(m),
+    onKnockGone: gid => { if (net.knock && net.knock.gid === gid) { clearTimeout(net.knock.timer); net.knock = null; hideToast(); } },
     onLink: (link, guestName) => { net.link = link; net.peer = guestName; },
     onAudio: st => walkie.heard(st),
     onMessage: m => onNetMessage(m),
     onVia: v => { net.via = v; paintNet(); },
     onLeft: () => peerLeft(),
     onWatchers: (n, join) => onWatchers(n, join),
-    onReaction: r => gotReaction(r, 'watcher'),
-    onClose: () => {
-      if (net.room !== room) return;            // closed on purpose (leaving, renaming): nothing to recover
-      // Lost by accident (network, server restart). Never leave the lobby advertising a room nobody hosts:
-      // take the listing down, and if still open to challengers, open a fresh room, which lists itself again.
-      net.room = null; unlist(); paintOnline();
-      if (net.open && !net.session) setTimeout(() => { if (net.open && !net.room && !net.session) ensureRoom(); }, 1500);
-    }
+    onReaction: r => gotReaction(r, 'watcher')
   });
   return room;
 }
 function listInLobby() {
   if (net.lobby || !net.room || !net.room.code) return;
   net.lobby = Net.listOpen(GAME, net.room.code, net.name, false, 1, net.watchers);
+  net.lobby.code = net.room.code;
 }
 function unlist() { if (net.lobby) { net.lobby.close(); net.lobby = null; } }
 function setOpen(on) {
@@ -712,7 +797,8 @@ function setOpen(on) {
 /* Someone knocked. If we asked for players (invite or open to challengers) they join after a short count,
    unless we say not now. */
 function onKnock(m) {
-  if (net.session || net.knock || net.watch) { net.room.decline(m.gid); return; }
+  // No side for them: already playing someone, someone else is joining, or two people share this screen. They watch.
+  if (net.session || net.knock || net.watch || (mode === 'play' && cpuTeam() < 0)) { net.room.decline(m.gid, true); return; }
   let n = 4;
   net.knock = { gid: m.gid, name: m.name, timer: null };
   const tick = () => {
@@ -752,21 +838,37 @@ function onGo() {
 }
 
 /* ----- joining: invite link or quick match ----- */
+const WAIT_MS = 60000;      // how long a link waits for its host to come back before it counts as expired
 function joinRoom(code, fromQuick) {
   leaveOnline();
   net.code = code;
+  const giveUp = () => { clearTimeout(net.joinWait); net.joinWait = null; };
   net.guest = Net.join(code, {
     name: net.name,
-    onKnocking: hostName => showJoin(`Waiting for <b>${esc(hostName)}</b> to let you in…`),
-    onLink: (link, hostName) => { net.link = link; net.peer = hostName; showJoin(`Joining <b>${esc(hostName)}</b>…`); },
+    onWaiting: () => {
+      if (fromQuick) { const g = net.guest; net.guest = null; if (g) g.close(); net.tried.push(fromQuick); quickMatch(true); return; }   // quick match does not wait
+      showJoin('Waiting for the game to open…<br><small>If your friend just switched apps to send you the link, you are let in as soon as they are back.</small>');
+      giveUp();
+      net.joinWait = setTimeout(() => {
+        net.joinWait = null;
+        if (!net.guest || net.link) return;
+        net.guest.close(); net.guest = null;
+        hideJoin(); toast('That invite has expired or the host has gone.', [['OK', hideToast]]);
+        refreshOpenNow();
+      }, WAIT_MS);
+    },
+    onKnocking: hostName => { giveUp(); showJoin(`Waiting for <b>${esc(hostName)}</b> to let you in…`); },
+    onLink: (link, hostName) => { giveUp(); net.link = link; net.peer = hostName; showJoin(`Joining <b>${esc(hostName)}</b>…`); },
     onAudio: st => walkie.heard(st),
     onMessage: m => onNetMessage(m),
     onVia: v => { net.via = v; paintNet(); },
     onLeft: () => peerLeft(),
-    onClose: code => {
-      net.guest = null;
+    onClose: c => {
+      net.guest = null; giveUp();
       if (fromQuick) { net.tried.push(fromQuick); quickMatch(true); return; }
-      const why = code === 4004 ? 'That invite has expired or the host has gone.' : code === 4010 ? 'That game is already full.' : code === 4003 ? 'The host could not play right now.' : 'Could not reach that game.';
+      // Both sides already have a player: watch the match instead. The room says "full" (or "busy" while someone joins).
+      if (c === 4010) { watchTable(code, 'Both sides already have a player, so you are watching.'); return; }
+      const why = c === 4004 ? 'That invite has expired or the host has gone.' : c === 4001 ? 'The host has left that game.' : c === 4003 ? 'The host could not play right now.' : 'Could not reach that game.';
       hideJoin(); toast(why, [['OK', hideToast]]);
       refreshOpenNow();      // that player may have gone: show the list as it is now
     }
@@ -795,6 +897,7 @@ function onStart(m) {
   beginSession(false, m.guestTeam);
   net.link.send({ t: 'go' }, true);
   if (PHONE && canFull && !isFull()) toast('Play full screen?', [['Full screen', () => { hideToast(); enterFullscreen(); }], ['No thanks', hideToast]], 8000);
+  flashGestures();
   R.say(G, m.midstream ? 'You are in' : 'Kick-off', 'info', m.midstream ? `You take over from the computer against ${m.host}.` : `${G.names[0]} v ${G.names[1]}.`);
 }
 
@@ -932,6 +1035,7 @@ function leaveOnline() {
   if (net.link) { try { net.link.send({ t: 'bye' }, true); } catch (e) { /* ignore */ } }
   endSession();
   if (net.guest) { net.guest.close(); net.guest = null; }
+  clearTimeout(net.joinWait); net.joinWait = null;
   if (net.room) { net.room.close(); net.room = null; }
   unlist(); net.open = false; net.seeking = false; net.watchers = 0;
   stopWatchingQuiet();
@@ -1005,14 +1109,27 @@ function feedAim(team, m) {
   lastFeedAim[team] = t; feed.aim(team, m);
 }
 
-function watchTable(code) {
+function watchTable(code, note) {
   enterFullscreen();
   leaveOnline(); closeOnline(); hideToast();
   showJoin('Finding the table…');
   const viewer = Spectate.createViewer(G, { onKeyframe: m => onWatchKeyframe(m) });
-  net.watch = { code, viewer, names: null, kits: '' };
-  net.watch.conn = Net.watch(code, {
-    onMessage: m => { if (m.t === 'watchers') { net.watchers = m.n; paintNet(); return; } if (m.t === 'wr') { gotReaction(m.r, 'room'); return; } viewer.receive(m); },
+  const w = net.watch = { code, viewer, names: null, kits: '', note, wait: null };
+  // The players' connection dropped (or is not up yet): keep watching for a while, then call it closed.
+  const waiting = () => {
+    if (!w.names) showJoin('Waiting for the table to open…');
+    else { toast('The players dropped off for a moment. Waiting for them…'); w.toasted = true; }
+    clearTimeout(w.wait);
+    w.wait = setTimeout(() => { if (net.watch === w) stopWatching('That table has closed.'); }, WAIT_MS);
+  };
+  w.conn = Net.watch(code, {
+    onMessage: m => {
+      if (m.t === 'waiting') { waiting(); return; }
+      if (m.t === 'watchers') { net.watchers = m.n; paintNet(); return; }
+      if (m.t === 'wr') { gotReaction(m.r, 'room'); return; }
+      if (w.wait) { clearTimeout(w.wait); w.wait = null; if (w.toasted) { w.toasted = false; hideToast(); } }   // they are back
+      viewer.receive(m);
+    },
     onClose: c => stopWatching(c === 4004 ? 'That table has closed.' : c === 4010 ? 'That table is full.' : 'The match has ended.')
   });
 }
@@ -1028,6 +1145,8 @@ function onWatchKeyframe(m) {
     if (mode !== 'play') enterPlay();
     V.setPreset('broadcast'); setCamButtons('broadcast');
     showBanner('Watching', 'info', `${w.names[0]} v ${w.names[1]}. Drag the table to look around.`);
+    flashGestures();
+    if (w.note) toast(esc(w.note), [['OK', hideToast]], 6000);
   }
   paintHud(true);
 }
@@ -1049,6 +1168,7 @@ const watchAim = {
 };
 function stopWatchingQuiet() {
   if (!net.watch) return;
+  clearTimeout(net.watch.wait);
   net.watch.conn.close(); net.watch = null; V.watch = false; watchAim.target = [null, null]; watchAim.cur = null;
   document.body.classList.remove('watching');
 }
@@ -1095,7 +1215,7 @@ function paintOpenNow(f) {
     const li = document.createElement('li'), info = document.createElement('div'), b = document.createElement('b'), sm = document.createElement('small'), btn = document.createElement('button');
     b.textContent = w.name; sm.textContent = 'Waiting for an opponent · ' + mins(w.since);
     btn.type = 'button'; btn.textContent = 'Play'; btn.setAttribute('aria-label', 'Play ' + w.name);
-    btn.onclick = () => { enterFullscreen(); joinRoom(w.code); };
+    btn.onclick = () => askName(w.code, () => joinRoom(w.code));
     info.append(b, sm); li.append(info, btn); lis.push(li);
   }
   for (const m of matches) {
@@ -1203,7 +1323,9 @@ function applyVis() {
   } else if (cpuTeam() >= 0) { if (pub !== net.open) setOpen(pub); else if (pub) { ensureRoom(); listInLobby(); } }
   paintVis();
 }
-const watchUrl = code => location.origin + location.pathname + '?watch=' + code;
+const joinUrl = code => location.origin + location.pathname + '?join=' + code;
+/* The game's code, whichever side of it we are on: our own room, the host's room we joined, or the table we watch. */
+const tableCode = () => net.watch ? net.watch.code : net.session && !isHostSide() ? net.code : net.room && net.room.code || null;
 var vis = PCVis.mount($('#visSlot'), {
   title: 'Flick Football',
   state: () => net.vis,
@@ -1213,26 +1335,19 @@ var vis = PCVis.mount($('#visSlot'), {
     applyVis(); paintOnline(); paintNet();      // the open panel says what it means
   },
   onShare() { if (!net.session && !net.watch && !net.room) { ensureRoom(); } },
-  link() {
-    if (net.watch) return net.code ? watchUrl(net.code) : null;
-    if (net.session) { const c = isHostSide() ? net.room && net.room.code : net.code; return c ? watchUrl(c) : null; }
-    return net.room && net.room.code ? net.room.url() : null;
-  },
-  text: () => net.session || net.watch ? 'Watch this Flick Football match live' : `${net.name} challenges you to Flick Football`,
+  // One link for everyone: it takes over the computer's side if there is one, and otherwise watches.
+  link() { const c = tableCode(); return c ? joinUrl(c) : null; },
+  text: () => net.session || net.watch ? 'Come and watch this Flick Football match' : `${net.name} challenges you to Flick Football`,
   watching: () => net.watchers,
   status() {
     const wants = net.session || net.watch || net.open || net.room;       // only say so when the game is meant to be online
     if (!wants) return null;
     if (!navigator.onLine) return 'Offline';
     if (net.session && net.session.waiting()) return 'Reconnecting…';
-    if (net.open && !net.session && !net.room) return 'Reconnecting…';     // the room was lost; a new one is being opened
+    if (net.room && !net.room.up && !net.session) return 'Reconnecting…';   // the room dropped; it comes back under the same code
     return null;
   },
-  code() {
-    if (net.watch) return net.code || null;
-    if (net.session) return (isHostSide() ? net.room && net.room.code : net.code) || null;
-    return net.room && net.room.code || null;
-  },
+  code: tableCode,
   pending: () => !net.watch && !(net.room && net.room.code) && !net.session,
 });
 addEventListener('online', () => paintVis()); addEventListener('offline', () => paintVis());
@@ -1291,7 +1406,7 @@ function showJoin(html) { $('#joinOv').hidden = false; $('#joinMsg').innerHTML =
 function hideJoin() { $('#joinOv').hidden = true; }
 
 $('#olClose').onclick = closeOnline;
-$('#olName').onchange = () => { saveName($('#olName').value); if (net.room && !net.link) { net.room.close(); net.room = null; ensureRoom(); } };
+$('#olName').onchange = () => { saveName($('#olName').value); if (net.room) net.room.rename(net.name); };
 $('#olCopy').onclick = async () => { try { await navigator.clipboard.writeText(net.room.url()); $('#olCopy').textContent = 'Copied'; setTimeout(() => { $('#olCopy').textContent = 'Copy link'; }, 1500); } catch (e) { $('#olLink').select(); } };
 $('#olShare').onclick = () => { if (navigator.share && net.room) navigator.share({ title: 'Flick Football', text: `${net.name} challenges you to Flick Football`, url: net.room.url() }).catch(() => {}); };
 $('#olOpen').onclick = () => setOpen(!net.open);
@@ -1299,7 +1414,12 @@ $('#olQuick').onclick = () => { enterFullscreen(); closeOnline(); quickMatch(); 
 $('#olLiveRefresh').onclick = () => refreshLive();
 $('#olWatchCopy').onclick = async () => { try { await navigator.clipboard.writeText($('#olWatchLink').value); $('#olWatchCopy').textContent = 'Copied'; setTimeout(() => { $('#olWatchCopy').textContent = 'Copy'; }, 1500); } catch (e) { $('#olWatchLink').select(); } };
 $('#olJoin').onclick = () => { const c = $('#olJoinCode').value.trim().toUpperCase(); if (/^[A-HJ-NP-Z2-9]{5}$/.test(c)) { closeOnline(); joinRoom(c); } else $('#olJoinCode').focus(); };
-$('#joinCancel').onclick = () => { net.seeking = false; if (net.guest) { net.guest.close(); net.guest = null; } hideJoin(); };
+$('#joinCancel').onclick = () => {
+  net.seeking = false; clearTimeout(net.joinWait); net.joinWait = null;
+  if (net.guest) { net.guest.close(); net.guest = null; }
+  hideJoin();
+  if (net.watch && !net.watch.names) stopWatching();          // gave up on a table that has not opened yet
+};
 window.addEventListener('pagehide', () => { if (net.link) try { net.link.send({ t: 'bye' }, true); } catch (e) { /* ignore */ } });
 
 /* ---------- main loop ---------- */
@@ -1333,7 +1453,7 @@ function tick(now) {
   try {
     if (mode === 'play') {
       advance(dt);
-      remoteAim.frame(dt); watchAim.frame(dt); flushAim(false);
+      remoteAim.frame(dt); watchAim.frame(dt); flushAim(false); paintCard();
       ATM.watchers = net.watchers; ATM.update(dt, G); govern(dt);
       paintHud(false); syncCam(false);
     } else if (mode === 'setup') V.orbit(dt * 0.12, 0);
@@ -1383,6 +1503,9 @@ function syncBackground() {
   } else if (bg.worker) { bg.worker.terminate(); bg.worker = null; }
 }
 document.addEventListener('visibilitychange', syncBackground);
+/* Back from another app (often WhatsApp, after sending the invite): make sure the room is up, so the link works. */
+document.addEventListener('visibilitychange', () => { if (!document.hidden && net.room) net.room.wake(); });
+addEventListener('online', () => { if (net.room) net.room.wake(); });
 
 /* ---------- phones: full screen, landscape, screen awake, and a frame-rate governor ---------- */
 const PHONE = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
@@ -1468,7 +1591,7 @@ window.playcity = { toScreen: (x, z) => V && V.toScreen(x, 0, z), state: () => (
 
 refreshOpenNow();
 
-/* Opened from an invite link: knock straight away. */
+/* Opened from a link: ?watch= watches; ?join= asks for a name, then knocks. */
 const watchCode = new URLSearchParams(location.search).get('watch');
 if (watchCode && /^[A-HJ-NP-Za-hj-np-z2-9]{5}$/.test(watchCode)) {
   history.replaceState(null, '', location.pathname);
@@ -1477,6 +1600,7 @@ if (watchCode && /^[A-HJ-NP-Za-hj-np-z2-9]{5}$/.test(watchCode)) {
 const joinCode = new URLSearchParams(location.search).get('join');
 if (joinCode && /^[A-HJ-NP-Za-hj-np-z2-9]{5}$/.test(joinCode)) {
   history.replaceState(null, '', location.pathname);
-  viewReady.then(() => joinRoom(joinCode.toUpperCase()));
+  const c = joinCode.toUpperCase();
+  askName(c, () => viewReady.then(() => joinRoom(c)));        // then: the computer's side if there is one, else watch
 }
 })();

@@ -20,8 +20,9 @@ import type { Game, WhotEvent } from "../public/whot/engine.js";
    Cost: the table hibernates between messages. Because hibernation drops memory, the table keeps ONE small row
    (the game, about 5 KB) in its SQLite storage, rewritten once per human move. Computer turns run at once in the
    same invocation, and the browsers pace them for display, so no timers run here. One alarm covers the turn clock
-   (only when two or more people are seated) and the clean-up: two minutes after the last person leaves, the row is
-   deleted. */
+   (only when two or more people are seated) and the clean-up: ten minutes after the last person leaves, the row is
+   deleted. That is long enough for a host who switched apps to send the invite link (a phone drops the connection
+   within seconds) to come back to their table, and for the friend's link to still find it. */
 
 interface Ask { seat: number; until: number; rid: string }   // seat -1: any open seat; rid is public, the connection id is not
 interface Seat { cpuName: string; id: string | null; prev: string | null; strikes: number; prevName?: string; away?: boolean }   // prev: who sat here last; prevName: the name they had; away: they stopped answering (so no automatic seat back)
@@ -40,7 +41,7 @@ interface Captured { kind: string; actor: number | null; cpu: boolean; views: Ma
 const TURN_MS = 45_000;       // turn clock for a person
 const PACE_MS = 1_200;        // browsers show each computer turn for about this long
 const ANIM_MS = 1_500;        // allowance for the animation of the move before yours
-const EMPTY_MS = 120_000;     // keep an empty table this long, for a reload or a dropped connection
+const EMPTY_MS = 600_000;     // keep an empty table this long, for a reload, a dropped connection or a host away sending the link
 const STRIKES = 2;            // turns timed out in a row before the seat goes back to the computer
 const GRACE_MS = 10_000;      // a player who drops on their own turn gets this long to come back before the computer moves
 const ASK_MS = 15_000;        // a seat request is accepted on its own after this, unless someone declines
@@ -358,7 +359,7 @@ export class WhotTable extends DurableObject<Env> {
 
   /* Sit at once (the invite link, or nobody here to ask), or put a request on this connection. Returns why not. */
   private requestSeat(t: Table, ws: WebSocket, conn: Conn, want: number): string | null {
-    const free = want >= 0 ? (t.seats[want]?.id === null ? want : -1) : t.seats.findIndex(s => s.id === null);
+    const free = want >= 0 ? (t.seats[want]?.id === null ? want : -1) : this.freeSeat(t);
     if (free < 0) return "seat-taken";
     const own = t.seats.findIndex(s => s.id === null && s.prev === conn.id);      // your own seat, left a while ago: no need to ask anyone
     if (own >= 0 && (want < 0 || want === own)) { this.take(t, own, ws, conn); return null; }
@@ -378,9 +379,16 @@ export class WhotTable extends DurableObject<Env> {
   /* Seat the requested (else first open) seat for someone whose request was accepted. */
   private grant(t: Table, w: WebSocket, c: Conn) {
     const want = c.ask!.seat;
-    const i = want >= 0 && t.seats[want]?.id === null ? want : t.seats.findIndex(s => s.id === null);
+    const i = want >= 0 && t.seats[want]?.id === null ? want : this.freeSeat(t);
     if (i < 0) { w.serializeAttachment({ ...c, ask: null }); this.send(w, { t: "denied", reason: "full" }); return; }
     this.take(t, i, w, c);
+  }
+
+  /* A computer seat for someone who asked for any seat. Seats nobody has a claim on come first, so a friend arriving
+     by link while the host is away (sending that link) gets a computer's cards, not the host's own seat. */
+  private freeSeat(t: Table): number {
+    const fresh = t.seats.findIndex(s => s.id === null && !s.prev);
+    return fresh >= 0 ? fresh : t.seats.findIndex(s => s.id === null);
   }
 
   /* Accept requests nobody answered in time, and all of them when nobody is left to answer. */

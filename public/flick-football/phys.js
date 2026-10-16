@@ -10,7 +10,7 @@ const C = {
   gw: 14, gh: 4.0, gd: 5, postR: 0.4,     // goal mouth width, height, depth, post radius
   boxD: 18, boxHW: 22,                    // penalty area depth and half width
   muP: 0.27,                              // metal cap sliding on the table (was 0.3: a cap travels ~11% further for the same hit)
-  muB: 0.18, muSpin: 200, kS: 2.5e-3,     // button sliding friction, spin decay (rad/s^2), spin bend (curling-stone effect)
+  muB: 0.16, muSpin: 200, kS: 2.5e-3,     // button sliding friction (was 0.18: a 70% goal kick now runs on to the far six-yard box instead of stopping in the far half), spin decay (rad/s^2), spin bend (curling-stone effect)
   eWall: 0.55,                            // solid wooden side rails
   eGround: 0.5, ePlayer: 0.64, eKeeper: 0.55, ePost: 0.68, eNet: 0.12, ePP: 0.7,   // ePlayer: cap meets button, a touch livelier (was 0.6)
   muBP: 0.38, muPost: 0.2,

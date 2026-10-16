@@ -7,11 +7,19 @@ import { DurableObject } from "cloudflare:workers";
    - spectators join as "watch": the host sends one light feed of confirmed moves (messages starting {"t":"w"),
      and the room fans it out to every watcher. Watchers only listen, apart from reactions: a clap, a cheer or
      an ooh, at most a few a second each, which the room passes to the host and the other watchers.
+   The host's connection can drop without the host leaving: a phone switching to WhatsApp to send the invite link
+   loses it within seconds. So the code stays good. A guest or watcher who arrives while the host is away waits
+   ({"t":"waiting"}) and is let in when the host is back; the host reconnects with the same code and its own host
+   id (hid), which also replaces a stale connection the room still thinks is open. Only a deliberate leave (close
+   code 1000, or 1001 when the tab closes) sends everyone away.
    Nothing is stored. All state lives in the WebSocket attachments, so the room hibernates between messages and an
    idle room costs nothing. Pings are answered by the runtime without waking it. */
 
 type Role = "host" | "guest" | "watch";
-interface Peer { role: Role; id: string; name: string; in: boolean }
+interface Peer { role: Role; id: string; name: string; in: boolean; hid?: string }
+
+const HID = /^[A-Za-z0-9]{6,32}$/;
+const LEFT = new Set([1000, 1001]);   // close codes that mean the host meant to go
 
 const MAX_MSG = 64 * 1024;
 const GUEST_LIMIT = 4;            // knocks waiting at once
@@ -37,24 +45,41 @@ export class Room extends DurableObject<Env> {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
+    const qh = url.searchParams.get("hid") || "", hid = HID.test(qh) ? qh : undefined;
     const host = this.host();
+    const same = role === "host" && !!host && !!hid && this.peer(host).hid === hid;   // the host again, on a fresh connection
     let reject: [number, string] | null = null;
-    if (role === "host" && host) reject = [4009, "taken"];
-    if (role === "guest" && !host) reject = [4004, "no-host"];
-    if (role === "guest" && host && this.peers("guest").length >= GUEST_LIMIT) reject = [4010, "busy"];
-    if (role === "guest" && host && this.peers("guest").some(p => this.peer(p).in)) reject = [4010, "busy"];
-    if (role === "watch" && !host) reject = [4004, "no-host"];
-    if (role === "watch" && host && this.peers("watch").length >= WATCH_LIMIT) reject = [4010, "full"];
+    if (role === "host" && host && !same) reject = [4009, "taken"];
+    if (role === "guest" && this.peers("guest").length >= GUEST_LIMIT) reject = [4010, "busy"];
+    if (role === "guest" && this.peers("guest").some(p => this.peer(p).in)) reject = [4010, "busy"];
+    if (role === "watch" && this.peers("watch").length >= WATCH_LIMIT) reject = [4010, "full"];
 
     this.ctx.acceptWebSocket(server, [role]);
-    server.serializeAttachment({ role, id, name, in: role === "host" } satisfies Peer);
+    server.serializeAttachment({ role, id, name, in: role === "host", hid: role === "host" ? hid : undefined } satisfies Peer);
     if (reject) {
       server.close(reject[0], reject[1]);
     } else if (role === "host") {
+      if (same) host!.close(4011, "replaced");
+      // A guest who was playing before the drop stays in only if the host still has them (in=gid); others waiting knock now.
+      const keep = url.searchParams.get("in") || "";
+      for (const g of this.peers("guest")) {
+        const p = this.peer(g);
+        if (p.in && p.id !== keep) g.close(4001, "host-left");
+      }
       server.send(JSON.stringify({ t: "hosting", id }));
+      for (const g of this.peers("guest")) {
+        const p = this.peer(g);
+        if (p.in) continue;
+        server.send(JSON.stringify({ t: "knock", gid: p.id, name: p.name }));
+        g.send(JSON.stringify({ t: "knocking", host: name }));
+      }
+      if (this.peers("watch").length) this.watchers(true);     // they need a keyframe from this connection
+    } else if (!host) {
+      server.send(JSON.stringify({ t: "waiting" }));             // nobody holds the code right now: wait for them
+      if (role === "watch") this.watchers(false);
     } else if (role === "watch") {
       this.watchers(true);
-    } else if (host) {
+    } else {
       host.send(JSON.stringify({ t: "knock", gid: id, name }));
       server.send(JSON.stringify({ t: "knocking", host: this.peer(host).name }));
     }
@@ -68,7 +93,7 @@ export class Room extends DurableObject<Env> {
       // Control messages from the host are about one guest; everything else goes to the guest who is in.
       const head = raw.slice(0, 40);
       if (head.includes('"t":"accept"') || head.includes('"t":"decline"')) {
-        let m: { t: string; gid?: string };
+        let m: { t: string; gid?: string; full?: boolean };
         try { m = JSON.parse(raw); } catch { return; }
         const g = this.peers("guest").find(p => this.peer(p).id === m.gid);
         if (!g) return;
@@ -76,7 +101,8 @@ export class Room extends DurableObject<Env> {
           for (const other of this.peers("guest")) if (other !== g) other.close(4010, "busy");
           g.serializeAttachment({ ...this.peer(g), in: true });
           g.send(JSON.stringify({ t: "accepted", host: me.name }));
-        } else g.close(4003, "declined");
+        } else if (m.full) g.close(4010, "full");          // no side free for them: they watch instead
+        else g.close(4003, "declined");
         return;
       }
       if (raw.startsWith('{"t":"w')) { for (const w of this.peers("watch")) w.send(raw); return; }
@@ -100,8 +126,17 @@ export class Room extends DurableObject<Env> {
   async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
     const me = this.peer(ws);
     if (me.role === "host") {
-      for (const g of this.peers("guest")) g.close(4001, "host-left");
-      for (const w of this.peers("watch")) w.close(4001, "host-left");
+      if (this.peers("host").some(w => w !== ws)) { /* replaced by the same host's new connection */ }
+      else if (LEFT.has(code)) {
+        for (const g of this.peers("guest")) g.close(4001, "host-left");
+        for (const w of this.peers("watch")) w.close(4001, "host-left");
+      } else {
+        // Dropped, not left: everyone waits for the host to reconnect. A guest who was playing hears through their
+        // direct link (or its silence) whether the match goes on.
+        const away = JSON.stringify({ t: "waiting" });
+        for (const g of this.peers("guest")) if (!this.peer(g).in) g.send(away);
+        for (const w of this.peers("watch")) w.send(away);
+      }
     } else if (me.role === "watch") {
       this.watchers(false);
     } else {

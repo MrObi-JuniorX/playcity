@@ -1031,6 +1031,10 @@ async function applyMsg(m,backlog){
   if(m.invite&&m.invite!==net.key){net.key=m.invite; keyStore.set(net.code,m.invite);}
   if(m.you!==null&&m.you!==undefined&&(was===null||was===undefined)&&net.wasAsking){toast('You are in. Good luck!',3200);}
   net.wasAsking=!!net.asking;
+  if(net.sit&&m.seats){        // came to sit (a link, a tile, a code): say so when every seat already has a person
+    net.sit=false;
+    if((m.you===null||m.you===undefined)&&!net.asking&&!net.mine&&m.seats.every(x=>x.human)) toast('Every seat has a player, so you are watching. Tap a seat when one frees up.',4200);
+  }
   noticeAsks();
   voiceState={online:true,me:m.voice.me,peers:m.voice.peers,all:!!m.voice.all,owner:!!m.voice.owner};
   voice.update(voiceState);

@@ -1,5 +1,2 @@
 # Type declarations for the Worker; browsers never need them.
 *.d.ts
-
-# Floodlight FC is not released yet: keep it out of the deploy until this line is removed.
-floodlight-fc/

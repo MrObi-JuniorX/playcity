@@ -93,47 +93,77 @@ function createLink(ws, initiator, h) {
 }
 
 /* Host: hold a room open. Knocks arrive through onKnock; accept() starts the link.
-   h: { name, onKnock({gid,name}), onLink(link, guestName), onLeft(), onClose(code) } */
+   The code is for keeps: if the connection drops (a phone switching apps to send the invite link loses it within
+   seconds), the room is opened again under the same code, so a link already sent still works. Guests who arrive
+   meanwhile wait in the room and knock once the host is back.
+   h: { name, code?, onOpen(code), onDown(), onKnock({gid,name}), onKnockGone(gid), onLink(link, guestName), onLeft(), onClose(code) } */
 function host(h) {
-  let ws, code = h.code || newCode(), link = null, tries = 0, closed = false;
-  const R = { get code() { return code; }, get link() { return link; } };
+  let ws = null, code = h.code || newCode(), link = null, tries = 0, closed = false, up = false, retry = 0, timer = null, probe = null;
+  const hid = newCode() + newCode();          // this host, across reconnects: lets the room swap a stale connection for a fresh one
+  const R = { get code() { return code; }, get link() { return link; }, get up() { return up; } };
   R.url = () => location.origin + location.pathname + '?join=' + code;
   function open() {
-    ws = new WebSocket(wsUrl(`/ws/room/${code}?role=host&name=${encodeURIComponent(h.name || 'Player')}`));
-    keepAlive(ws);
-    ws.onmessage = e => {
-      if (e.data === 'pong') return;
+    if (closed) return;
+    clearTimeout(timer); clearTimeout(probe);
+    const q = `role=host&name=${encodeURIComponent(h.name || 'Player')}&hid=${hid}` + (link && link.gid ? `&in=${link.gid}` : '');
+    const me = ws = new WebSocket(wsUrl(`/ws/room/${code}?${q}`));
+    keepAlive(me);
+    me.onmessage = e => {
+      if (me !== ws) return;
+      if (e.data === 'pong') { clearTimeout(probe); return; }
       let m; try { m = JSON.parse(e.data); } catch (x) { return; }
-      if (m.t === 'hosting') { h.onOpen && h.onOpen(code); return; }
+      if (m.t === 'hosting') { up = true; retry = 0; tries = 0; h.onOpen && h.onOpen(code); return; }
       if (m.t === 'knock') { h.onKnock(m); return; }
       if (m.t === 'watchers') { h.onWatchers && h.onWatchers(m.n, m.join); return; }
       if (m.t === 'wr') { h.onReaction && h.onReaction(m.r); return; }
-      if (m.t === 'peer-left') { if (m.wasIn && link) { link.close(); link = null; h.onLeft && h.onLeft(); } return; }
+      if (m.t === 'peer-left') {
+        if (m.wasIn && link) { link.close(); link = null; h.onLeft && h.onLeft(); }
+        else if (!m.wasIn) h.onKnockGone && h.onKnockGone(m.gid);      // gave up waiting before we answered
+        return;
+      }
       if (link) link.wsMessage(m);
     };
-    ws.onclose = e => {
-      if (closed) return;
-      if (e.code === 4009 && tries++ < 5) { code = newCode(); open(); return; }   // code taken: pick another
-      if (link && link.via === 'p2p') { const l = link; l.onP2pLost = () => { if (link === l) { l.close(); link = null; h.onLeft && h.onLeft(); } }; return; }
-      if (link) { link.close(); link = null; h.onLeft && h.onLeft(); }
-      h.onClose && h.onClose(e.code);
-    };
+    me.onclose = e => { if (me === ws) dropped(e.code); };
   }
+  function dropped(c) {
+    if (closed) return;
+    up = false; ws = null;
+    if (c === 4009 && tries++ < 5) { code = newCode(); open(); h.onOpen && h.onOpen(code); return; }   // code held by someone else: pick another
+    if (link && link.via === 'p2p') { const l = link; l.onP2pLost = () => { if (link === l) { l.close(); link = null; h.onLeft && h.onLeft(); } }; }
+    else if (link) { link.close(); link = null; h.onLeft && h.onLeft(); }
+    h.onDown && h.onDown(c);
+    timer = setTimeout(open, Math.min(15000, 1000 * 2 ** retry++));
+  }
+  /* Back in front of the person (tab shown again, network back): reconnect now rather than at the next backoff, and
+     check a socket that claims to be open really is (a phone asleep can leave one that never says it closed). */
+  R.wake = () => {
+    if (closed) return;
+    if (!ws) { retry = 0; open(); return; }
+    if (ws.readyState === 1) {
+      try { ws.send('ping'); } catch (e) { /* closing */ }
+      clearTimeout(probe);
+      const w = ws;
+      probe = setTimeout(() => { if (w === ws) { w.onclose = null; try { w.close(); } catch (e) { /* ignore */ } dropped(1006); } }, 4000);
+    }
+  };
+  /* A new name for the knock message: the same room on a fresh connection, which replaces this one. */
+  R.rename = name => { h.name = name; if (!closed && !link) { const w = ws; ws = null; if (w) { w.onclose = null; w.onmessage = null; } open(); if (w) setTimeout(() => { try { w.close(1000); } catch (e) { /* ignore */ } }, 3000); } };
   R.accept = (gid, guestName) => {
-    ws.send(JSON.stringify({ t: 'accept', gid }));
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'accept', gid }));
     link = createLink(ws, true, { onMessage: m => h.onMessage(m), onVia: v => h.onVia && h.onVia(v), onAudio: st => h.onAudio && h.onAudio(st) });
+    link.gid = gid;
     link.start();
     h.onLink && h.onLink(link, guestName);
   };
-  R.decline = gid => ws.send(JSON.stringify({ t: 'decline', gid }));
-  R.sendWatch = m => { if (ws.readyState === 1) ws.send(JSON.stringify(m)); };   // spectator feed: the room fans it out
-  R.dropGuest = () => { if (link) { link.close(); link = null; } R.close(); };
-  R.close = () => { closed = true; if (link) link.close(); link = null; try { ws.close(1000); } catch (e) { /* ignore */ } };
+  R.decline = (gid, full) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(full ? { t: 'decline', gid, full: true } : { t: 'decline', gid })); };
+  R.sendWatch = m => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(m)); };   // spectator feed: the room fans it out
+  R.close = () => { closed = true; clearTimeout(timer); clearTimeout(probe); if (link) link.close(); link = null; try { ws && ws.close(1000); } catch (e) { /* ignore */ } };
   open();
   return R;
 }
 
-/* Guest: knock on a room. h: { name, onKnocking(hostName), onLink(link, hostName), onLeft(), onClose(code) } */
+/* Guest: knock on a room. h: { name, onWaiting(), onKnocking(hostName), onLink(link, hostName), onLeft(), onClose(code) }
+   onWaiting: nobody holds the code right now (the host may be switching apps); the knock goes in when they are back. */
 function join(code, h) {
   let link = null, closed = false;
   const ws = new WebSocket(wsUrl(`/ws/room/${code}?role=guest&name=${encodeURIComponent(h.name || 'Player')}`));
@@ -141,6 +171,7 @@ function join(code, h) {
   ws.onmessage = e => {
     if (e.data === 'pong') return;
     let m; try { m = JSON.parse(e.data); } catch (x) { return; }
+    if (m.t === 'waiting') { if (!link) h.onWaiting && h.onWaiting(); return; }
     if (m.t === 'knocking') { h.onKnocking && h.onKnocking(m.host); return; }
     if (m.t === 'accepted') {
       link = createLink(ws, false, { onMessage: mm => h.onMessage(mm), onVia: v => h.onVia && h.onVia(v), onAudio: st => h.onAudio && h.onAudio(st) });

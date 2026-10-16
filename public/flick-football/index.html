@@ -183,7 +183,7 @@ input[type=range] { width: 100%; accent-color: var(--card); height: 22px; backgr
 #toast button { background: var(--card); color: var(--card-ink); border: 0; border-radius: 5px; padding: 7px 12px; font-weight: 700; }
 #toast button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
 .icon-btn.live { border-color: var(--good); color: var(--good); }
-#onlineOv, #joinOv, #help, #menuOv, #breakOv { z-index: 20; }   /* above the setup screen, which comes later in the page */   /* above the setup screen, which comes later in the page */
+#onlineOv, #nameOv, #joinOv, #help, #menuOv, #breakOv { z-index: 20; }   /* above the setup screen, which comes later in the page */
 #onlineOv .card { text-align: left; }
 #onlineOv h2 { text-align: center; }
 .ol-box { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); }
@@ -227,6 +227,30 @@ body.watching #shot, body.watching .pad { display: none !important; }
 #react button { width: 42px; height: 42px; border-radius: 50%; border: 0; background: var(--panel-2); font-size: 21px; line-height: 1; transition: transform .08s; }
 #react button:active { transform: scale(.88); }
 #floaters { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 4; }
+/* Set pieces: the card beside the taker (or the ball, while arranging) that carries Ready */
+#setCard { position: absolute; left: 0; top: 0; z-index: 6; transform: translate(-50%, -50%); display: flex; align-items: center; gap: 8px; padding: 4px 4px 4px 11px; border-radius: 999px; background: rgba(13,21,23,.9); border: 1.5px solid var(--card); color: var(--ink); font-size: 12px; font-weight: 600; line-height: 1.1; white-space: nowrap; box-shadow: 0 8px 20px -8px rgba(0,0,0,.8); }
+#setCard button { appearance: none; min-height: 34px; padding: 0 15px; border: 0; border-radius: 999px; background: var(--card); color: var(--card-ink); font-family: var(--display); font-weight: 800; font-size: 16px; letter-spacing: .06em; text-transform: uppercase; cursor: pointer; animation: setPulse 1.6s ease-in-out infinite; }
+#setCard button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+@keyframes setPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(245,196,0,.55); } 60% { box-shadow: 0 0 0 7px rgba(245,196,0,0); } }
+/* View tips at the start of a match: about three seconds, never in the way of a tap */
+#gestTip { position: absolute; left: 50%; top: 56%; z-index: 8; transform: translate(-50%, -50%) scale(.96); pointer-events: none; display: flex; gap: 6px; padding: 12px 14px; border-radius: 14px; background: rgba(13,21,23,.88); border: 1px solid var(--line); box-shadow: 0 16px 40px -14px rgba(0,0,0,.85); opacity: 0; transition: opacity .3s, transform .3s; }
+#gestTip.on { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+#gestTip figure { margin: 0; width: 92px; display: grid; justify-items: center; gap: 4px; text-align: center; font-size: 12px; line-height: 1.25; color: var(--muted); }
+#gestTip figure b { display: block; font-family: var(--display); font-weight: 800; font-size: 16px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink); }
+#gestTip svg { width: 54px; height: 54px; color: var(--card); overflow: visible; }
+#gestTip .f { fill: var(--ink); stroke: rgba(13,21,23,.9); stroke-width: 1.5; }
+#gestTip .m, #gestTip.mouse .t { display: none; }
+#gestTip.mouse .m { display: grid; }
+#gestTip .g-twist { transform-origin: 30px 30px; animation: gTwist 1.3s ease-in-out infinite alternate; }
+#gestTip .g-pan { animation: gPan 1.3s ease-in-out infinite alternate; }
+#gestTip .g-pinch-a { animation: gPinchA 1.3s ease-in-out infinite alternate; }
+#gestTip .g-pinch-b { animation: gPinchB 1.3s ease-in-out infinite alternate; }
+@keyframes gTwist { from { transform: rotate(-22deg); } to { transform: rotate(22deg); } }
+@keyframes gPan { from { transform: translateX(-5px); } to { transform: translateX(5px); } }
+@keyframes gPinchA { from { transform: translate(4px, -4px); } to { transform: translate(-2px, 2px); } }
+@keyframes gPinchB { from { transform: translate(-4px, 4px); } to { transform: translate(2px, -2px); } }
+@media (max-height: 460px), (max-width: 520px) { #gestTip { top: 52%; padding: 9px 10px; } #gestTip figure { width: 76px; font-size: 11px; } #gestTip svg { width: 42px; height: 42px; } #gestTip figure b { font-size: 14px; } }
+@media (prefers-reduced-motion: reduce) { #setCard button, #gestTip .g-twist, #gestTip .g-pan, #gestTip .g-pinch-a, #gestTip .g-pinch-b { animation: none; } #gestTip { transition: none; } }
 #floaters span { position: absolute; bottom: 60px; font-size: 28px; animation: floatUp 2.2s ease-out forwards; }
 @keyframes floatUp { 0% { transform: translateY(0) scale(.6); opacity: 0; } 12% { opacity: 1; transform: translateY(-20px) scale(1.1); } 100% { transform: translateY(-260px) translateX(var(--dx, 0)) scale(1); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { #floaters span { animation-duration: .8s; } }
@@ -353,6 +377,14 @@ body.watching #shot, body.watching .pad { display: none !important; }
     <button id="pttBtn" type="button" hidden aria-label="Walkie-talkie: hold to talk to your opponent" title="Walkie-talkie"><canvas id="pttWave" width="112" height="112" aria-hidden="true"></canvas><svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 6.5V2"/><rect x="7" y="6.5" width="11" height="16" rx="2.5"/><path d="M4.5 10v4.5" stroke-width="2.4"/><path d="M10 10h5M10 12.5h5M10 15h5"/><rect x="10" y="18" width="5" height="2.5" rx=".6" fill="currentColor" stroke="none"/></svg></button>
     <div id="talkBadge" hidden role="status"><i class="tb-mic" aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 6.5V2"/><rect x="7" y="6.5" width="11" height="16" rx="2.5"/><path d="M10 10h5M10 12.5h5M10 15h5"/></svg></i><b id="talkName"></b><canvas id="talkWave" width="120" height="32" aria-hidden="true"></canvas></div>
     <div id="floaters" aria-hidden="true"></div>
+    <div id="setCard" hidden><span id="setCardTxt">Drag to move the taker</span><button type="button" id="setReady">Ready</button></div>
+    <div id="gestTip" hidden aria-hidden="true">
+      <figure class="t"><svg viewBox="0 0 60 60" aria-hidden="true"><circle cx="30" cy="30" r="17" fill="none" stroke="currentColor" stroke-opacity=".6" stroke-width="2" stroke-dasharray="3 4"/><g class="g-twist"><path d="M41 12a21 21 0 0 1 7 9" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M48 21l1-6M48 21l-6 0" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M19 48a21 21 0 0 1-7-9" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M12 39l-1 6M12 39l6 0" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><circle class="f" cx="30" cy="13" r="5.5"/><circle class="f" cx="30" cy="47" r="5.5"/></g></svg><figcaption><b>Rotate</b>Twist two fingers</figcaption></figure>
+      <figure class="t"><svg viewBox="0 0 60 60" aria-hidden="true"><g class="g-pan"><circle class="f" cx="24" cy="24" r="5.5"/><circle class="f" cx="24" cy="38" r="5.5"/><path d="M33 24h13M41 19l5 5-5 5M33 38h13M41 33l5 5-5 5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></g></svg><figcaption><b>Move</b>Swipe two fingers</figcaption></figure>
+      <figure class="t"><svg viewBox="0 0 60 60" aria-hidden="true"><g class="g-pinch-a"><circle class="f" cx="23" cy="37" r="5.5"/><path d="M17 43l-6 6M11 43v6h6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></g><g class="g-pinch-b"><circle class="f" cx="37" cy="23" r="5.5"/><path d="M43 17l6-6M43 11h6v6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></g></svg><figcaption><b>Zoom</b>Pinch</figcaption></figure>
+      <figure class="m"><svg viewBox="0 0 60 60" aria-hidden="true"><rect x="22" y="14" width="16" height="26" rx="8" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M30 14v8" stroke="currentColor" stroke-width="2.4"/><path class="g-twist" d="M12 48c10 6 26 6 36 0M44 44l4 4-5 3" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg><figcaption><b>Turn</b>Drag the table</figcaption></figure>
+      <figure class="m"><svg viewBox="0 0 60 60" aria-hidden="true"><rect x="22" y="14" width="16" height="26" rx="8" fill="none" stroke="currentColor" stroke-width="2.4"/><path class="g-pan" d="M30 19v6" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/><path d="M30 44v8M26 48h8" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg><figcaption><b>Zoom</b>Scroll the wheel</figcaption></figure>
+    </div>
     <div id="netPill" hidden aria-live="polite"></div>
     <div id="toast" role="status" hidden></div>
     <div id="banner" role="status"><span class="eb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="9" cy="14" r="5"/><path d="M13 11l8-4v4l-6 3"/></svg><span class="ebt">Referee</span></span><span class="cd"></span><span class="tt"></span><span class="dt"></span></div>
@@ -403,7 +435,7 @@ body.watching #shot, body.watching .pad { display: none !important; }
         <li><b>Match clock.</b> Set the half length on the setup screen, or choose Off to play without halves. Open <b>Menu</b> (or press Esc) to pause, end the match or quit to team selection.</li>
         <li><b>Kick-offs.</b> Before every kick-off the defending side can drag its caps anywhere in its own half, outside its penalty area and the centre circle, then press <b>Ready</b>. The computer sets up instantly. The match clock waits while the caps are arranged.</li>
         <li><b>Goal kicks.</b> Before a goal kick the other side starts from its formation and can drag its caps anywhere outside the kicker’s penalty area, then press <b>Ready</b>, just like at a kick-off.</li>
-        <li><b>Set pieces.</b> Before a throw-in, corner, goal kick, free kick, penalty or kick-off, press <b>Move taker</b> (or M) and drag the taker to a new spot. Throw-in and corner takers stay behind the lines.</li>
+        <li><b>Set pieces.</b> Every throw-in, corner, goal kick, free kick or penalty you take starts with the taker picked up: drag the lit cap (or tap inside the yellow area) to move it, then tap <b>Ready</b> on the card beside it (or Enter) and flick. Throw-in and corner takers stay behind the lines. At a kick-off, <b>Move taker</b> (or M) moves the taker.</li>
         <li><b>The referee.</b> Every decision gets a whistle and a signal. A second foul by the same player is a yellow card, a fourth is a red card and the player is sent off.</li>
         <li><b>Restarts.</b> Throw-ins, corners, goal kicks, free kicks and penalties are taken by the highlighted player only.</li>
         <li><b>Camera.</b> Tap <b>2D</b> for a flat top view and <b>3D</b> to go back to the angled view. Open <b>View</b> to tilt the table down to pitch level, turn it, zoom, or pick a preset such as Low 3D. You can also drag empty table to orbit, pinch to zoom, or use Q/E and R/F.</li>
@@ -440,6 +472,14 @@ body.watching #shot, body.watching .pad { display: none !important; }
       <div class="ol-row"><input id="olJoinCode" maxlength="5" placeholder="Have a code?" aria-label="Room code" autocapitalize="characters"><button class="btn ghost" id="olJoin">Join</button></div>
       <button class="btn ghost" id="olClose">Back</button>
     </div>
+  </div>
+
+  <div class="overlay" id="nameOv" hidden>
+    <form class="card" id="nameForm"><h2>Join the game</h2>
+      <p>Game <b id="nameCode"></b>. You take over the computer's side, or watch if both sides have a player.</p>
+      <label class="field ol-name">Your name<input id="nameIn" maxlength="24" autocomplete="nickname" placeholder="Your name" enterkeyhint="go"></label>
+      <div class="row2"><button class="btn" type="submit">Join</button><button class="btn ghost" type="button" id="nameCancel">Not now</button></div>
+    </form>
   </div>
 
   <div class="overlay" id="joinOv" hidden>

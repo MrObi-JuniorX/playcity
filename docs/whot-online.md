@@ -69,7 +69,7 @@ Flick Football already worked this way: a challenger knocks, the host is told, a
 | You drop on someone else's turn | The computer holds your cards. When this browser reconnects, you get the seat back automatically, unless someone else has taken it. |
 | You go idle on your turn | After 45 s the computer makes one move for you. After 2 timeouts in a row your seat goes back to the computer and you become a watcher. The clock only runs when 2 or more people are seated. |
 | Nobody seated | The table pauses ("Take a seat to carry on"). |
-| Everyone gone | The table is deleted 2 minutes after the last person leaves. |
+| Everyone gone | The table is deleted 10 minutes after the last person leaves, so a host who switched apps to send the link (phones drop the connection within seconds) still finds it, and so does the friend. Someone arriving for any seat gets a computer seat nobody has a claim on before the absent host's own. |
 
 ### Midstream: from a game against the computer to an online table
 
@@ -112,7 +112,7 @@ The table hibernates between messages. Because hibernation drops memory, it keep
 | Incoming messages (20:1 billing) | about 6 request-equivalents |
 | Storage writes | about 120 rows, roughly $0.0001 |
 | Duration | Worst case awake the whole game: $0.0014 (0.125 GB × 900 s). Slow players let it hibernate. |
-| Idle or empty tables | $0. Deleted 2 minutes after the last person leaves. |
+| Idle or empty tables | $0. Deleted 10 minutes after the last person leaves (one 5 KB row until then). |
 
 Computer turns cost nothing extra: they run inside the person's move that triggered them.
 

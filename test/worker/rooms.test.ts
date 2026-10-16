@@ -52,10 +52,97 @@ describe("invite room", () => {
     expect(host.got.some(m => m.t === "offer")).toBe(false);
   });
 
-  it("knocking on a code nobody holds is refused", async () => {
-    const guest = await open("/ws/room/ZZZZZ?role=guest");
+  it("knocking on a code nobody holds waits, and knocks as soon as the host opens it", async () => {
+    const guest = await open("/ws/room/ZZZZZ?role=guest&name=Sam");
+    await guest.next("waiting");
+    expect(guest.closed()).toBe(null);
+    const host = await open("/ws/room/ZZZZZ?role=host&name=Ada");
+    await host.next("hosting");
+    expect((await host.next("knock")).name).toBe("Sam");
+    expect((await guest.next("knocking")).host).toBe("Ada");
+  });
+
+  it("a host whose connection drops keeps the code: a link sent meanwhile waits, then gets in", async () => {
+    const h1 = await open("/ws/room/DRPAA?role=host&name=Ada&hid=hostid0001");
+    await h1.next("hosting");
+    const watcher = await open("/ws/room/DRPAA?role=watch");
+    await watcher.next("watchers");
+    h1.ws.close(4000, "dropped");                       // not 1000/1001: the phone went to another app
+    await watcher.next("waiting");
+    const guest = await open("/ws/room/DRPAA?role=guest&name=Sam");
+    await guest.next("waiting");
+    const h2 = await open("/ws/room/DRPAA?role=host&name=Ada&hid=hostid0001");
+    await h2.next("hosting");
+    expect((await h2.next("knock")).name).toBe("Sam");
+    expect((await h2.next("watchers")).join).toBe(true);   // the watcher asks the new connection for a keyframe
+    expect(watcher.closed()).toBe(null);
+  });
+
+  it("the same host on a fresh connection replaces a stale one; a different host is still refused", async () => {
+    const h1 = await open("/ws/room/RPLAA?role=host&hid=hostid0002");
+    await h1.next("hosting");
+    const watcher = await open("/ws/room/RPLAA?role=watch");
+    await watcher.next("watchers");
+    const other = await open("/ws/room/RPLAA?role=host&hid=someoneels");
+    await other.until(() => other.closed() !== null);
+    expect(other.closed()!.code).toBe(4009);
+    const h2 = await open("/ws/room/RPLAA?role=host&hid=hostid0002");
+    await h2.next("hosting");
+    await h1.until(() => h1.closed() !== null);
+    expect(h1.closed()!.code).toBe(4011);
+    await new Promise(r => setTimeout(r, 100));
+    expect(watcher.closed()).toBe(null);                // a replacement is not the host leaving
+    h2.send({ t: "wk", n: 1 });
+    expect((await watcher.next("wk")).n).toBe(1);
+  });
+
+  it("a host leaving on purpose sends everyone away", async () => {
+    const host = await open("/ws/room/LVEAA?role=host");
+    await host.next("hosting");
+    const watcher = await open("/ws/room/LVEAA?role=watch");
+    await watcher.next("watchers");
+    const guest = await open("/ws/room/LVEAA?role=guest");
+    await host.next("knock");
+    host.ws.close(1000, "bye");
+    await watcher.until(() => watcher.closed() !== null);
     await guest.until(() => guest.closed() !== null);
-    expect(guest.closed()!.code).toBe(4004);
+    expect(watcher.closed()!.code).toBe(4001);
+    expect(guest.closed()!.code).toBe(4001);
+  });
+
+  it("a host with no side free turns a knock into watching (full), and the host hears a guest who gave up", async () => {
+    const host = await open("/ws/room/FULAA?role=host");
+    await host.next("hosting");
+    const g1 = await open("/ws/room/FULAA?role=guest");
+    const k1 = await host.next("knock");
+    host.send({ t: "decline", gid: k1.gid, full: true });
+    await g1.until(() => g1.closed() !== null);
+    expect(g1.closed()!.code).toBe(4010);
+    const g2 = await open("/ws/room/FULAA?role=guest");
+    const k2 = (await host.until(() => host.got.filter(m => m.t === "knock").length === 2), host.got.filter(m => m.t === "knock")[1]);
+    g2.ws.close(1000);
+    await host.until(() => host.got.some(m => m.t === "peer-left" && m.gid === k2.gid && m.wasIn === false));
+  });
+
+  it("after a drop, the guest who was playing stays in only if the host still has them", async () => {
+    const h1 = await open("/ws/room/KEPAA?role=host&hid=hostid0003");
+    await h1.next("hosting");
+    const guest = await open("/ws/room/KEPAA?role=guest&name=Sam");
+    const k = await h1.next("knock");
+    h1.send({ t: "accept", gid: k.gid });
+    await guest.next("accepted");
+    h1.ws.close(4000, "dropped");
+    const h2 = await open(`/ws/room/KEPAA?role=host&hid=hostid0003&in=${k.gid}`);
+    await h2.next("hosting");
+    await new Promise(r => setTimeout(r, 100));
+    expect(guest.closed()).toBe(null);
+    guest.send({ t: "in", n: [1] });
+    expect((await h2.next("in")).n).toEqual([1]);
+    h2.ws.close(4000, "dropped");
+    const h3 = await open("/ws/room/KEPAA?role=host&hid=hostid0003");   // the direct link died meanwhile: no in=
+    await h3.next("hosting");
+    await guest.until(() => guest.closed() !== null);
+    expect(guest.closed()!.code).toBe(4001);
   });
 
   it("a second host for a held code is refused", async () => {
@@ -146,10 +233,10 @@ describe("spectators", () => {
     expect(w1.got.some(m => m.t === "wr")).toBe(false);    // the sender plays its own reaction locally
   });
 
-  it("watching a table nobody holds is refused", async () => {
+  it("watching a table nobody holds waits for it", async () => {
     const w = await open("/ws/room/NQNQN?role=watch");
-    await w.until(() => w.closed() !== null);
-    expect(w.closed()!.code).toBe(4004);
+    await w.next("waiting");
+    expect(w.closed()).toBe(null);
   });
 
   it("public live matches are listed, newest first, and are never offered as opponents", async () => {

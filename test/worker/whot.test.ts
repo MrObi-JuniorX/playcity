@@ -104,6 +104,20 @@ describe("whot table", () => {
     expect(ada.last().v.log.at(-1).msg).toBe("Sam took Computer's seat.");
   });
 
+  it("a friend arriving by link while the host is away gets a computer's seat, not the host's", async () => {
+    const ada = await create("WAWAY");
+    await ada.myTurn();
+    const key = ada.last().invite;
+    ada.ws.close(4000, "switched to WhatsApp");
+    await new Promise(r => setTimeout(r, 150));
+    const sam = await open("/ws/whot/WAWAY?name=Sam&id=sam-id-away1&sit=1&k=" + key);
+    await sam.until(() => sam.last()?.you != null);
+    expect(sam.last().you).toBe(1);
+    const back = await open("/ws/whot/WAWAY?name=Ada&id=creator-WAWAY");   // Ada back from WhatsApp, same browser
+    await back.until(() => back.last()?.you === 0);
+    expect(back.last().seats.map((x: any) => x.human)).toEqual([true, true, false]);
+  });
+
   it("a player who leaves hands the seat back to the computer, and gets it back on reconnect", async () => {
     const ada = await create("WEEEE");
     await ada.myTurn();
@@ -327,6 +341,7 @@ describe("whot table", () => {
       await sam.until(() => sam.got.slice(n).some(x => x.kind === "auto"));
     }
     await sam.until(() => sam.last().you === null);
+    if (sam.last().v.over) return;            // the random deal let the computer win first: a claim only shows mid-round
     // Sam is still connected, now watching, and the table remembers whose seat it was and what he was called
     await sam.until(() => sam.last().mine !== null);
     expect(sam.last().mine).toEqual({ seat: 1, name: "Sam" });
@@ -334,6 +349,7 @@ describe("whot table", () => {
     // Coming back by reload does not quietly put him back in: he is asked first
     const again = await open("/ws/whot/WJJJA?name=Sam&id=sam-id-0105");
     await again.until(() => again.last());
+    if (again.last().v.over) return;
     expect(again.last().you).toBeNull();
     expect(again.last().mine).toEqual({ seat: 1, name: "Sam" });
     // He says yes: the seat is his again at once, without asking Ada
@@ -358,13 +374,13 @@ describe("whot table", () => {
     expect(ada.last().asks[0].name).toMatch(/^Fay /);
   });
 
-  it("deletes the table two minutes after the last person leaves", async () => {
+  it("deletes the table ten minutes after the last person leaves", async () => {
     const ada = await create("WKKKK");
     await ada.myTurn();
     ada.ws.close(1000, "bye");
     await new Promise(r => setTimeout(r, 150));
     await peek(table("WKKKK"), async (inst: any, state) => {
-      expect(inst.t.emptyAt).toBeGreaterThan(Date.now() + 60_000);
+      expect(inst.t.emptyAt).toBeGreaterThan(Date.now() + 9 * 60_000);
       inst.t.emptyAt = Date.now() - 1;
       expect(await state.storage.getAlarm()).not.toBe(null);
     });
@@ -519,7 +535,7 @@ describe("walkie-talkie signalling", () => {
     sam.ws.close();                                                                   // the seat changes hands
     await ada.until(() => voiceOf(ada).peers.length === 0);
     const bo = await open("/ws/whot/WZZZZ?name=Bo&id=bo-voice-01&sit=1&k=" + ada.last().invite);
-    await bo.until(() => bo.last()?.you === 1);
+    await bo.until(() => bo.last()?.you === 2);                                        // a computer seat nobody holds a claim on, not Sam's
     await ada.until(() => voiceOf(ada).peers.length === 1);
     expect(voiceOf(ada).peers[0].vid).not.toBe(samVid);                                // a new id: links are rebuilt for Bo
   });

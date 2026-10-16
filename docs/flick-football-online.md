@@ -190,3 +190,31 @@ Following map and 3D-viewer conventions:
   A cap knocked by another at 80% pull slides 27% further. Masses are unchanged; momentum and impulse simply follow the extra speed.
 - **Bug caught on the way:** an inline comment had cut off `ePost`, `eNet` and `ePP`, turning every cap-on-cap collision into NaN. A new test now requires every physics constant to be a real number.
 - **Ball marker:** the yellow ring around a tiny ball read as a yellow-kit cap. It is now four short white arcs on a dark edge, a target marker no kit resembles, in both the 3D and the flat 2D views.
+
+## Invite links that survive the host switching apps (2026-10-16)
+
+**Bug:** a shared link said "That invite has expired or the host has gone." Sending the link from a phone (WhatsApp, the share sheet) puts the game in the background, and phones, iPhones especially, drop its connection within seconds. The room closed, so the friend was turned away. When the host came back the game opened a room under a **new** code, so the link never worked again.
+
+**Now:**
+- **The code is for keeps.** `Net.host` reconnects by itself under the same code: backoff 1 s → 15 s, straight away when the tab is shown again or the network returns, and with a ping check for a socket that claims to be open but is dead. It sends a per-host id (`hid`), so the room swaps a stale host connection for the fresh one instead of refusing it as "taken". Renaming reuses the code too.
+- **Arrivals wait instead of failing.** With no host connected, the room accepts guests and watchers and sends `{"t":"waiting"}`. The host's return knocks for each waiting guest and asks for a keyframe for the watchers. The page shows "Waiting for the game to open…" and gives up after 60 s. Quick match never waits: it moves on to the next player.
+- **Drop vs leave.** Only a deliberate close (1000, or 1001 when the tab closes) sends everyone away (4001). Any other close means "dropped": watchers keep watching ("The players dropped off for a moment…"), and a guest who was playing stays in if the host still has them (the host reconnects with `in=<gid>`).
+- **One link, then a name.** The Share button always sends `?join=CODE`, during a match too. Opening it asks for a name first (once per game per tab), then knocks: the friend takes over the computer's side, or watches if both sides have a player (the host declines with `full`, the room closes with 4010, and the page switches to watching). "Play" in Open now asks for the name too.
+- **Fixed on the way:** a guest who gave up during the host's 4-second count left the host stuck on "Connecting to…". The room's `peer-left` for a guest who never got in now clears the knock.
+- **Tested:** `test/worker/rooms.test.ts` covers waiting guests and watchers, the same host replacing a stale connection, a different host still refused, a deliberate leave, `full`, a guest who gave up, and `in=`. In the browser: host dropped and kept away → friend's link waited → host back on the same code → friend took over the computer's side; a third person on the same link watched; a mid-match drop kept both the match and the watcher.
+- **Not fixable from the page:** on iPhone, a link tapped in WhatsApp opens in Safari (or WhatsApp's own browser), never in a home-screen web app. Android opens it in the installed app when Chrome is the default browser.
+
+## Set pieces, livelier ball, view tips (2026-10-16)
+
+- **Place, then Ready.** People did not find "Move taker". Every throw-in, corner, goal kick, free kick or penalty you take now starts with the taker picked up: the yellow area shows where it may stand, and dragging the lit cap (or tapping inside the area) moves it. A small card beside the cap, on the side away from the ball, says "Drag to move the taker" and carries **Ready** (Enter on a keyboard). Only after Ready does a pull back flick. The same card carries Ready while you arrange your caps for a kick-off or a goal kick. Placing is local to your screen; the moves go out as ordinary taker commands. "Move taker" stays for kick-offs and for moving again after Ready.
+- **Ball friction 0.18 → 0.16.** Measured goal kick from the 6-yard line, straight, nobody in the way (stop point; the far six-yard box starts at x = 52):
+
+  | Pull | 0.18 | 0.16 |
+  |---|---|---|
+  | 60% | 11 (just past halfway) | 18 |
+  | 65% | 22 | 31 |
+  | 70% | 34 | 45 (the far penalty area, by the six-yard box) |
+  | 75% | 48 | runs to the far goal line |
+
+  A full pull already reached the far keeper, and still does. The computer's aim reads the same constant, so it adjusts by itself.
+- **View tips at the start of a match**: rotate (twist two fingers), move (swipe two fingers), zoom (pinch), with small animated fingers; drag and wheel on a mouse. Shown for about three seconds when you kick off, join someone or start watching. It never takes a tap, and touching the table hides it at once.
