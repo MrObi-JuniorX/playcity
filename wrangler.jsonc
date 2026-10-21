@@ -2,6 +2,8 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "playcity",
   "main": "src/index.ts",
+  // The console page runs the same cup engine as the server: bundled from src/cup before dev and deploy.
+  "build": { "command": "npm run build" },
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
   // The games are static files: served free and unmetered. The Worker only runs for /api/* and /ws/*.
@@ -10,13 +12,21 @@
     "bindings": [
       { "name": "ROOM", "class_name": "Room" },
       { "name": "LOBBY", "class_name": "Lobby" },
-      { "name": "WHOT", "class_name": "WhotTable" }
+      { "name": "WHOT", "class_name": "WhotTable" },
+      { "name": "CUP", "class_name": "CupDirector" },
+      { "name": "CUP_GATE", "class_name": "CupGate" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Room", "Lobby"] },
-    { "tag": "v2", "new_sqlite_classes": ["WhotTable"] }
+    { "tag": "v2", "new_sqlite_classes": ["WhotTable"] },
+    { "tag": "v3", "new_sqlite_classes": ["CupDirector", "CupGate"] }
   ],
+  // Whot Cup system of record: players, wallets, the ledger, cups (docs/whot-cup-prd.md, section 10).
+  // No database_id: `wrangler deploy` creates the database on first deploy and writes its id back here.
+  "d1_databases": [{ "binding": "DB", "database_name": "playcity", "migrations_dir": "migrations" }],
+  // Daily housekeeping: sign-in code rows after 24 hours, long-dead sessions (src/auth/routes.ts cleanup).
+  "triggers": { "crons": ["17 3 * * *"] },
   "observability": { "enabled": true, "head_sampling_rate": 0.1 }
   // Optional TURN for players behind strict NATs: wrangler secret put TURN_KEY_ID / TURN_KEY_API_TOKEN
 }

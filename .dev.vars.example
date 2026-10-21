@@ -1,0 +1,10 @@
+# Local development only (wrangler dev). Copy to .dev.vars. Never set AUTH_MODE=dev in production.
+AUTH_MODE=dev
+SMS_PROVIDER=fake
+# Generate your own: openssl rand -base64 32
+PHONE_HMAC_KEY=
+PHONE_ENC_KEY=
+# The first console owner (their player id is shown on /console/ after phone sign-in). Comma-separated.
+OWNER_PLAYER_IDS=
+# Naira cups stay blocked unless this is 1 (PRD Phase 13).
+CASH_ENABLED=0

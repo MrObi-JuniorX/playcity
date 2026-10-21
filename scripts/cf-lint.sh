@@ -18,6 +18,15 @@ for f in $(grep -lE 'storage\.(put|kv\.put|sql\.exec)' src/*.ts); do
   grep -q 'deleteAll' "$f" || { echo "❌ $f stores state but never deletes it (call storage.deleteAll when the table empties)"; fail=1; }
 done
 
+# Whot Cup (docs/whot-cup-prd.md): gates hold sockets only, so an idle gate hibernates for free.
+if grep -nE 'storage\.|\.sql\.' src/cup/gate.ts; then echo "❌ CupGate stays storage-free: keep state in socket attachments"; fail=1; fi
+# Hidden cards never reach a log (PRD 8.2 rule 4): no hand, market, deck or whole game in a console call.
+if grep -rnE 'console\.[a-z]+\(.*(\bhands?\b|\bmarket\b|\bdeck\b|\bt\.g\b|[(,] *g *[,)])' src --include='*.ts' | grep -v 'cf-lint-allow'; then
+  echo "❌ A console call mentions cards or a game: log ids and counts only"; fail=1; fi
+
+# Phone numbers never reach a log (PRD T15, S-13).
+if grep -rnE 'console\.[a-z]+\(.*\b(phone|e164)\b' src --include='*.ts' | grep -v 'cf-lint-allow'; then echo "❌ A console call mentions a phone number"; fail=1; fi
+
 grep -q '"head_sampling_rate"' wrangler.jsonc || { echo "❌ observability.head_sampling_rate missing"; fail=1; }
 grep -q 'new_sqlite_classes' wrangler.jsonc || { echo "❌ Durable Objects must use SQLite classes"; fail=1; }
 [ $fail -eq 0 ] && echo "✅ cf-lint passed"

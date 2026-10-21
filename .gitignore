@@ -1,3 +1,6 @@
 node_modules/
 .wrangler/
 .dev.vars
+# built from src/cup by npm run build
+public/console/cup.js
+public/console/cup.js.map

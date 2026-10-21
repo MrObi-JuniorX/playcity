@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Whot Cup · playcity</title>
+<meta name="description" content="Play Whot for coins in a weekend cup. The top two at every table get paid.">
+<meta name="theme-color" content="#0b1316">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600..800&family=Figtree:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#0b1316; --ink:#eef4f0; --muted:#9bb2ad; --line:rgba(255,255,255,.12); --panel:#101c20; --field:#0d171a;
+  --accent:#ffc247; --accent-ink:#2b1c00; --whot:#b0303f; --whot-soft:rgba(176,48,63,.22); --second:#22a094; --good:#7fd69a; --bad:#ff8f7a;
+  --font-display:'Bricolage Grotesque','Trebuchet MS',system-ui,sans-serif;
+  --font-body:'Figtree',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --font-mono:'DM Mono',ui-monospace,Menlo,monospace;
+}
+*,*::before,*::after{box-sizing:border-box}
+html{background:var(--bg)}
+body{margin:0; min-height:100dvh; color:var(--ink); font:400 16px/1.5 var(--font-body); background:radial-gradient(70% 45% at 50% 0%,var(--whot-soft),transparent 75%),var(--bg)}
+.page{max-width:760px; margin:0 auto; padding-block:clamp(18px,4vw,36px) calc(40px + env(safe-area-inset-bottom,0px)); padding-left:max(16px,env(safe-area-inset-left,0px)); padding-right:max(16px,env(safe-area-inset-right,0px)); display:flex; flex-direction:column; gap:22px}
+.top{display:flex; justify-content:space-between; align-items:center}
+.brand{display:flex; align-items:center; gap:10px; font:800 1.15rem var(--font-display); color:inherit; text-decoration:none}
+.brand i{width:12px; height:12px; border-radius:50%; background:var(--accent)}
+.top a.back{color:var(--muted); text-decoration:none}
+h1{margin:0; font:800 clamp(2rem,7vw,3.1rem)/1 var(--font-display); letter-spacing:-.035em; text-wrap:balance}
+h2{margin:0; font:700 1.2rem var(--font-display)}
+.eyebrow{font:500 .8rem var(--font-mono); letter-spacing:.08em; text-transform:uppercase; color:var(--muted)}
+.hero{display:grid; gap:12px}
+.count{font:700 1.05rem var(--font-body)}
+.count b{font:800 1.4rem var(--font-display); font-variant-numeric:tabular-nums}
+.seats{display:grid; gap:6px}
+.bar{height:10px; border-radius:999px; background:var(--field); border:1px solid var(--line); overflow:hidden}
+.bar i{display:block; height:100%; background:var(--accent); width:0}
+.tiles{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:1px; background:var(--line); border:1px solid var(--line); border-radius:14px; overflow:hidden}
+.tile{background:var(--panel); padding:12px 14px; display:grid; gap:2px}
+.tile b{font:800 1.3rem var(--font-display); font-variant-numeric:tabular-nums}
+.tile span{color:var(--muted); font-size:.85rem}
+@media (max-width:520px){ .tiles{grid-template-columns:1fr} }
+.card{background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:18px; display:grid; gap:12px}
+.card.act{border-color:rgba(226,86,107,.5)}
+.btn{font:700 1.02rem var(--font-body); border-radius:12px; padding:13px 18px; cursor:pointer; border:1px solid var(--line); background:transparent; color:var(--ink); text-align:center; text-decoration:none; display:inline-block}
+.btn.primary{background:var(--accent); border-color:var(--accent); color:var(--accent-ink)}
+.btn.second{background:var(--second); border-color:var(--second); color:#03201d}
+.btn:disabled{opacity:.55; cursor:default}
+.btn:focus-visible{outline:3px solid var(--accent); outline-offset:2px}
+.row{display:flex; flex-wrap:wrap; gap:10px; align-items:center}
+.muted{color:var(--muted)}
+.msg{margin:0} .msg.bad{color:var(--bad)} .msg.good{color:var(--good)} .msg:empty{display:none}
+.strip{display:flex; flex-wrap:wrap; gap:6px 18px; font:500 .95rem var(--font-mono); font-variant-numeric:tabular-nums}
+.strip .neg{color:var(--bad)} .strip .pos{color:var(--good)}
+.how{margin:0; padding:0; list-style:none; display:grid; gap:10px; counter-reset:how}
+.how li{display:grid; grid-template-columns:28px 1fr; gap:10px; align-items:start; counter-increment:how}
+.how li::before{content:counter(how); width:28px; height:28px; border-radius:8px; background:var(--whot); color:#fff; font:800 .9rem var(--font-display); display:grid; place-items:center}
+table{border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums}
+th,td{padding:8px 10px; text-align:left; border-bottom:1px solid var(--line)}
+th{font:500 .74rem var(--font-mono); text-transform:uppercase; letter-spacing:.06em; color:var(--muted)}
+td.n,th.n{text-align:right}
+.scroll{overflow-x:auto}
+.mono{font-family:var(--font-mono); font-size:.8rem; word-break:break-all}
+details summary{cursor:pointer; font-weight:600}
+.offer{border:1px solid var(--second); background:rgba(34,160,148,.12)}
+.ring{font:800 1.6rem var(--font-display); font-variant-numeric:tabular-nums; color:var(--second)}
+[hidden]{display:none!important}
+@media (prefers-reduced-motion:no-preference){.bar i{transition:width .6s ease}}
+</style>
+</head>
+<body>
+<main class="page">
+  <div class="top"><a class="brand" href="/"><i></i>playcity</a><a class="back" href="/">← Games</a></div>
+
+  <p id="loading" class="muted">Loading the cup…</p>
+  <p id="missing" class="msg bad" hidden>We couldn't find that cup. <a href="/" style="color:var(--accent)">See what's on</a>.</p>
+
+  <section class="hero" id="hero" hidden>
+    <span class="eyebrow" id="eyebrow"></span>
+    <h1 id="name"></h1>
+    <p class="muted" id="sponsor" hidden style="margin:0"></p>
+    <p class="count" id="count" style="margin:0"></p>
+    <div class="seats" id="seats"><div class="bar"><i id="seatBar"></i></div><span class="muted" id="seatText"></span></div>
+    <div class="tiles">
+      <div class="tile"><b id="tFee"></b><span>to enter</span></div>
+      <div class="tile"><b id="tChamp"></b><span id="tChampL">champion takes home</span></div>
+      <div class="tile"><b>Top 2</b><span>at every table get paid</span></div>
+    </div>
+  </section>
+
+  <section class="card act" id="action" hidden aria-live="polite"></section>
+
+  <section class="card" id="howCard" hidden>
+    <h2>How it works</h2>
+    <ol class="how" id="how"></ol>
+  </section>
+
+  <section class="card" id="ladderCard" hidden>
+    <h2 id="ladderTitle">What each table pays</h2>
+    <div class="scroll"><table><thead><tr><th>Round</th><th class="n">Players</th><th class="n">1st gets</th><th class="n">2nd gets</th></tr></thead><tbody id="ladder"></tbody></table></div>
+    <p class="muted" id="ladderNote" style="margin:0;font-size:.9rem"></p>
+  </section>
+
+  <section class="card" id="schedCard" hidden>
+    <h2>Schedule</h2>
+    <div class="scroll"><table><tbody id="sched"></tbody></table></div>
+  </section>
+
+  <section class="card" id="fairCard" hidden>
+    <details><summary>How seating is kept fair</summary>
+      <p class="muted">Before each round we publish a fingerprint (SHA-256) of a random seed. After the round is seated we publish the seed, so anyone can check it matches and recompute every table. Players who share a phone or a network are never seated together early on.</p>
+      <div class="scroll"><table><thead><tr><th>Round</th><th>Fingerprint</th><th>Seed</th></tr></thead><tbody id="seeds"></tbody></table></div>
+    </details>
+  </section>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const slug = new URLSearchParams(location.search).get('c') || '';
+  const n = (x) => Number(x).toLocaleString('en-NG');
+  const at = (ms) => new Date(ms).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+  const lagos = (ms) => new Date(ms).toLocaleTimeString([], { timeZone: 'Africa/Lagos', hour: 'numeric', minute: '2-digit' });
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  let cup = null, data = null, me = null, signedIn = false, timer = 0;
+
+  const ERR = {
+    'signed-out': 'Sign in to enter.', 'profile-incomplete': 'Finish your profile first: a name, an avatar and the 18+ check.',
+    'cooling-off': "You're on a break from cups. Free games are still open.", 'weekly-limit': 'This entry would take you past your weekly limit.',
+    'insufficient-funds': "You don't have enough coins. Your daily coins arrive at 8am.", 'full': 'The cup is full.',
+    'already-entered': "You're already in.", 'not-open-yet': "Entry isn't open yet.", closed: 'Entry has closed.', 'check-in-closed': 'Check-in is closed.',
+    'no-seat': "You don't have a seat to check in to.", 'offer-closed': 'The Second Chance offer has closed.', 'no-offer': 'No Second Chance offer is open for you.',
+    country: "This cup isn't open in your country.", 'account-too-new': 'Your account is too new for this cup.',
+  };
+  const say = (j) => ERR[j?.error] || 'Something went wrong. Please try again.';
+  async function api(method, path, body) {
+    const r = await fetch(path, { method, credentials: 'same-origin', headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+    let j = {}; try { j = await r.json(); } catch {}
+    return { ok: r.ok, status: r.status, j };
+  }
+
+  function countdown() {
+    const now = Date.now(), c = cup;
+    const steps = [[c.registrationOpensAt, 'Entry opens in'], [c.registrationClosesAt, 'Entry closes in'], [c.checkInOpensAt, 'Check-in opens in'], [c.checkInClosesAt, 'Check-in closes in'], [c.startsAt, 'Round 1 in']];
+    const next = steps.find(([t]) => t > now);
+    if (!next || ['running', 'settled', 'cancelled'].includes(cup.state)) { $('count').textContent = cup.state === 'running' ? 'Live now' : ''; return; }
+    let s = Math.floor((next[0] - now) / 1000);
+    const d = Math.floor(s / 86400); s %= 86400; const h = Math.floor(s / 3600); s %= 3600; const m = Math.floor(s / 60); s %= 60;
+    $('count').innerHTML = `${esc(next[1])} <b>${d ? d + 'd ' : ''}${h}h ${String(m).padStart(2, '0')}m ${String(s).padStart(2, '0')}s</b>`;
+  }
+
+  function drawHero() {
+    const c = cup;
+    document.title = `${c.name} · playcity`;
+    $('eyebrow').textContent = { scheduled: 'Coming up', registration: 'Entry open', closed: 'Entry closed', 'check-in': 'Check-in open', running: 'Live now', settled: 'Finished', cancelled: 'Cancelled' }[c.state] || c.state;
+    $('name').textContent = c.name;
+    if (c.sponsor) { $('sponsor').hidden = false; $('sponsor').textContent = `With ${c.sponsor}`; }
+    const pct = Math.min(100, Math.round((100 * data.entries) / c.capacity));
+    $('seatBar').style.width = pct + '%';
+    $('seatText').textContent = `${n(data.entries)} of ${n(c.capacity)} seats taken${data.waitlist ? ` · ${n(data.waitlist)} waiting` : ''}`;
+    $('seats').hidden = ['running', 'settled', 'cancelled'].includes(c.state);
+    $('tFee').textContent = `${n(c.entryFee)} ${c.currency === 'COIN' ? 'coins' : '₦'}`;
+    $('tChamp').textContent = data.estimate ? `≈ ${n(data.estimate.champion)}` : '–';
+    $('tChampL').textContent = 'champion takes home, roughly';
+    countdown(); clearInterval(timer); timer = setInterval(countdown, 1000);
+    $('hero').hidden = false;
+  }
+
+  function strip(e) {
+    if (!e) return '';
+    const staked = cup.entryFee + (e.sc_bought ? cup.scFee : 0), won = e.won || 0, net = won - staked;
+    return `<div class="strip"><span>Staked ${n(staked)}</span><span>Won ${n(won)}</span><span class="${net < 0 ? 'neg' : 'pos'}">Net ${net < 0 ? '−' : '+'}${n(Math.abs(net))}</span></div>`;
+  }
+
+  async function drawAction() {
+    const box = $('action'), c = cup, e = me?.entry, live = me?.live, now = Date.now();
+    let h = '';
+    if (c.state === 'cancelled') h = `<h2>This cup was cancelled</h2><p class="muted" style="margin:0">${esc(c.cancelReason || '')} Every stake has been refunded to wallets.</p>`;
+    else if (!signedIn) h = `<h2>Play in this cup</h2><p class="muted" style="margin:0">Sign in with your phone to enter. Free games never need an account.</p><a class="btn primary" href="/account/?next=${encodeURIComponent(location.pathname + location.search)}">Sign in to enter</a>`;
+    else if (!e) {
+      if (c.state === 'registration') h = `<h2>Enter for ${n(c.entryFee)} coins</h2><p class="muted" style="margin:0">${c.oversubscription === 'random-draw' ? 'If more people enter than there are seats, seats are drawn at random when entry closes, and everyone else is refunded.' : 'Seats go to the first entries.'}</p><button class="btn primary" id="enterBtn">Enter for ${n(c.entryFee)} coins</button><p class="msg" id="m"></p>`;
+      else if (c.state === 'scheduled') h = `<h2>Entry opens ${esc(at(c.registrationOpensAt))}</h2><p class="muted" style="margin:0">Come back then. Seats are limited.</p>`;
+      else h = `<h2>Entry has closed</h2><p class="muted" style="margin:0">${c.state === 'running' ? 'The cup is under way.' : 'Look out for the next cup.'}</p>`;
+    } else {
+      const st = e.state;
+      if (st === 'entered') h = `<h2>You're in</h2><p class="muted" style="margin:0">${c.oversubscription === 'random-draw' ? `Seats are drawn when entry closes, ${esc(at(c.registrationClosesAt))}.` : 'Your seat is saved.'} Check in from ${esc(at(c.checkInOpensAt))}.</p>${strip(e)}`;
+      else if (st === 'waitlist') h = `<h2>You're on the waitlist</h2><p class="muted" style="margin:0">${e.draw_rank ? `Number ${n(e.draw_rank)} in line.` : ''} Check in when it opens: seats left by no-shows go to checked-in players in line. If no seat comes free, your stake comes back.</p>${checkInBtn(e, now)}${strip(e)}`;
+      else if (st === 'seated') h = `<h2>${e.checked_in_at ? "You're checked in" : 'Your seat is drawn'}</h2><p class="muted" style="margin:0">${e.checked_in_at ? `Round 1 starts ${esc(at(c.startsAt))}.` : `Check in between ${esc(at(c.checkInOpensAt))} and ${esc(at(c.checkInClosesAt))}, or your seat goes to the waitlist${c.noShowRefund === 'full' ? ' and your stake comes back' : ''}.`}</p>${checkInBtn(e, now)}${strip(e)}`;
+      else if (st === 'playing' && live) h = liveHtml(live, e);
+      else if (st === 'finished') h = `<h2>${e.finish === 'champion' ? 'Champion!' : 'Your cup is over'}</h2><p class="muted" style="margin:0">${finishText(e.finish)}</p>${strip(e)}`;
+      else if (st === 'no-show') h = `<h2>You missed check-in</h2><p class="muted" style="margin:0">${c.noShowRefund === 'full' ? 'Your stake is back in your wallet.' : 'Stakes are not refunded for missed check-in in this cup.'}</p>`;
+      else if (st === 'refunded') h = `<h2>No seat this time</h2><p class="muted" style="margin:0">Your stake is back in your wallet.</p>`;
+      else h = `<h2>You're in</h2>${strip(e)}`;
+    }
+    box.innerHTML = h; box.hidden = false;
+    $('enterBtn')?.addEventListener('click', enter);
+    $('checkBtn')?.addEventListener('click', checkIn);
+    $('scBtn')?.addEventListener('click', buy);
+  }
+  const checkInBtn = (e, now) => (!e.checked_in_at && now >= cup.checkInOpensAt && now < cup.checkInClosesAt) ? `<button class="btn primary" id="checkBtn">I'm here</button><p class="msg" id="m"></p>` : '';
+  function liveHtml(l, e) {
+    if (l.offer && !l.offer.bought) {
+      const left = Math.max(0, Math.ceil((l.offer.expires - Date.now()) / 1000));
+      return `<div class="card offer"><h2>Second Chance: ${n(l.offer.fee)} coins</h2><p class="muted" style="margin:0">Play first-time losers like you. Win your table to stay in, and 2nd still gets paid. Reach the Second Chance final and you're in the Grand Final.</p><div class="row"><span class="ring">${left}s</span><button class="btn second" id="scBtn">Buy back in for ${n(l.offer.fee)}</button></div><p class="msg" id="m"></p></div>${strip(e)}`;
+    }
+    if (l.table && !l.table.done) return `<h2>Round ${l.slot}: your table is ready</h2><p class="muted" style="margin:0">${l.table.draw === 'L' ? 'Second Chance table.' : l.table.draw === 'GF' ? 'The Grand Final.' : 'Main draw table.'} 1st gets ${n(l.table.pay1)}, 2nd gets ${n(l.table.pay2)}. Table ${esc(l.table.code)}, seat ${l.table.seat + 1}.</p><p class="muted" style="margin:0;font-size:.9rem">Cup tables open in the next update; until then rounds are decided by the computer.</p>${strip(e)}`;
+    if (l.table?.done) return `<h2>${l.table.place === 1 ? 'You won your table!' : l.table.place === 2 ? 'Through!' : 'Table finished'}</h2><p class="muted" style="margin:0">You finished ${['', '1st', '2nd', '3rd', '4th'][l.table.place] || ''}. ${l.paused ? 'The cup is paused.' : 'The next round starts after the break.'}</p>${strip(e)}`;
+    return `<h2>Waiting for the next round</h2>${strip(e)}`;
+  }
+  const finishText = (f) => f === 'champion' ? 'You won the Grand Final.' : /^grand-final/.test(f || '') ? `You finished ${f.split('-').pop()}${['', 'st', 'nd', 'rd', 'th'][Number(f.split('-').pop())] || 'th'} in the Grand Final.` : /^main-r/.test(f || '') ? `You went out in main-draw round ${f.slice(6)}.` : 'You went out in Second Chance.';
+
+  async function enter() {
+    $('enterBtn').disabled = true;
+    const ref = new URLSearchParams(location.search).get('ref') || undefined;
+    const r = await api('POST', `/api/cups/${cup.slug}/enter`, { ref });
+    if (!r.ok) { $('m').textContent = say(r.j); $('m').className = 'msg bad'; $('enterBtn').disabled = false; return; }
+    await load();
+  }
+  async function checkIn() {
+    $('checkBtn').disabled = true;
+    const r = await api('POST', `/api/cups/${cup.slug}/checkin`, {});
+    if (!r.ok) { $('m').textContent = say(r.j); $('m').className = 'msg bad'; $('checkBtn').disabled = false; return; }
+    await load();
+  }
+  async function buy() {
+    $('scBtn').disabled = true;
+    const r = await api('POST', `/api/cups/${cup.slug}/second-chance`, {});
+    if (!r.ok) { $('m').textContent = say(r.j); $('m').className = 'msg bad'; $('scBtn').disabled = false; return; }
+    await load();
+  }
+
+  function drawInfo() {
+    const c = cup;
+    $('how').innerHTML = [
+      `Sit at a table of four. Finish 1st or 2nd and you go through${c.top1Threshold < c.capacity ? ' (in the big early rounds, only the winner goes through, and 2nd still gets paid)' : ''}. Both get paid.`,
+      'Every round you win pays more than the last.',
+      c.scEnabled ? `Lose in rounds 1–${c.scCutoffRound}? Buy a Second Chance for ${n(c.scFee)} within ${c.scBuyWindowSec} seconds and keep playing.` : 'One loss and your cup is over.',
+      `Two losses and you're out. The last four play the Grand Final, split ${c.gfSplit.join(' / ')}% of its pot.`,
+    ].map((x) => `<li>${esc(x)}</li>`).join('');
+    $('howCard').hidden = false;
+    const rows = data.schedule ? data.schedule.main.map((r) => [r.round, r.players, r.pay1, r.pay2]) : data.estimate ? data.estimate.main.map((r) => [r.round, r.players, r.pay1, r.pay2]) : [];
+    if (rows.length) {
+      $('ladderTitle').textContent = data.schedule ? 'What each main-draw table pays' : 'What each main-draw table pays (estimate)';
+      $('ladder').innerHTML = rows.map(([r, p, a, b]) => `<tr><td>${r === rows.length ? 'Final table' : 'Round ' + r}</td><td class="n">${n(p)}</td><td class="n">${n(a)}</td><td class="n">${n(b)}</td></tr>`).join('');
+      $('ladderNote').textContent = data.schedule ? `Fixed for a field of ${n(data.schedule.field)} players. Grand Final prizes come on top.` : `For a full cup of ${n(data.estimate.field)} players. The exact amounts are fixed when check-in closes.`;
+      $('ladderCard').hidden = false;
+    }
+    $('sched').innerHTML = [['Entry opens', c.registrationOpensAt], ['Entry closes', c.registrationClosesAt], ['Check-in opens', c.checkInOpensAt], ['Check-in closes', c.checkInClosesAt], ['Round 1', c.startsAt]]
+      .map(([l, t]) => `<tr><td>${l}</td><td>${esc(at(t))}</td><td class="muted">${esc(lagos(t))} Lagos</td></tr>`).join('');
+    $('schedCard').hidden = false;
+    if (data.seeds?.length) {
+      $('seeds').innerHTML = data.seeds.map((s) => `<tr><td>${s.slot === 0 ? 'Seat draw' : 'Round ' + s.slot}</td><td class="mono">${esc(s.commitment)}</td><td class="mono">${s.seed ? esc(s.seed) : '<span class="muted">after seating</span>'}</td></tr>`).join('');
+      $('fairCard').hidden = false;
+    }
+  }
+
+  async function load() {
+    const [d, m] = await Promise.all([api('GET', `/api/cups/${encodeURIComponent(slug)}`), api('GET', `/api/cups/${encodeURIComponent(slug)}/me`)]);
+    $('loading').hidden = true;
+    if (!d.ok) { $('missing').hidden = false; return; }
+    data = d.j; cup = d.j.cup; signedIn = m.status !== 401; me = m.ok ? m.j : null;
+    drawHero(); drawInfo(); await drawAction();
+  }
+  if (!/^[a-z0-9-]{3,48}$/.test(slug)) { $('loading').hidden = true; $('missing').hidden = false; }
+  else { load(); setInterval(() => { if (!document.hidden && cup && ['check-in', 'running', 'registration'].includes(cup.state)) load(); }, 15000); }
+})();
+</script>
+</body>
+</html>
