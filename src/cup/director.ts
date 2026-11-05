@@ -3,7 +3,8 @@ import { advanceFrom, cutOf, gfPrizes, isFinal, isTop1, mainBase, planSecondChan
 import { type CupConfig } from "./config";
 import { commitment, newSeed, seatTables, seededOrder } from "./seating";
 import { cupAccount, cupSpec, ISSUER, issuerSpec, LedgerError, PLATFORM, platformSpec, playerAccount, transferAll, transferStatements, type Transfer } from "../wallet/ledger";
-import { hmac } from "../auth/crypto";
+import { resultSig, seatToken } from "./tokens";
+import type { TableSpec } from "./tablecore";
 import type { AuthEnv } from "../auth/env";
 
 /* CupDirector: one per cup (docs/whot-cup-prd.md, section 7, Phases 4-5). It owns the cup's clock and its rounds.
@@ -18,9 +19,10 @@ import type { AuthEnv } from "../auth/env";
      2 go to the Grand Final, which is one more table; then GF prizes, the platform's Second Chance cut, and a
      reconciliation of the cup's pot.
 
-   Tables: in "simulate" mode (until Phase 6 builds cup tables, and for rehearsals) each table finishes at random from
-   its seed the moment it is seated. In "external" mode tables report a signed result; the table clock is the
-   backstop: a table that hasn't reported by its deadline is finished at random from its seed and marked late.
+   Tables: in "external" mode real cup tables (CupTable, src/cup/table.ts) play the games: each one asks for its
+   record here (tableSpec) when its first player arrives, and reports a signed result with its stats. The deadline
+   is the backstop: a table that hasn't reported by then is finished at random from its seed and marked late. In
+   "simulate" mode (rehearsals and the cost tests) each table finishes at random from its seed the moment it is seated.
 
    Money moves through the ledger with idempotency keys, so a retried step never pays twice.
    Storage: a few SQL tables in this object; nothing here is written per move, only per table and per slot. */
@@ -325,7 +327,7 @@ export class CupDirector extends DurableObject<DirectorEnv> {
   private addTable(s: State, c: CupConfig, slot: number, draw: Draw | "GF", players: string[], n: number, final: boolean, pay1: number, pay2: number, now: number): string {
     const code = tableCode();
     this.sql.exec("INSERT INTO tbl (code, slot, draw, players, n, final, pay1, pay2, deadline) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      code, slot, draw, JSON.stringify(players), n, final ? 1 : 0, pay1, pay2, now + (c.tableClockSec + c.disconnectGraceSec + 60) * 1000);
+      code, slot, draw, JSON.stringify(players), n, final ? 1 : 0, pay1, pay2, now + backstopMs(c));
     (this.newCodes ??= []).push(code);
     return code;
   }
@@ -348,8 +350,27 @@ export class CupDirector extends DurableObject<DirectorEnv> {
 
   /* ---------- results ---------- */
 
-  /** A table's signed result (Phase 6 tables call this). `places` lists every seated player, 1st first. */
-  async report(code: string, places: string[], sig: string): Promise<{ ok: boolean; error?: string }> {
+  /** What a cup table needs to know about itself (Phase 6): its players, their names, its pay and its clocks.
+      Only a table this cup seated, still unfinished, gets an answer. No seed: the table shuffles its own deck. */
+  async tableSpec(code: string): Promise<{ spec?: TableSpec; error?: string }> {
+    const s = this.state();
+    if (!s || s.phase !== "running") return { error: "not-running" };
+    const t = this.sql.exec("SELECT * FROM tbl WHERE code = ?", code).toArray()[0] as unknown as TableRow | undefined;
+    if (!t) return { error: "no-table" };
+    if (t.result) return { error: "finished" };
+    const c = this.cfg(), players = JSON.parse(t.players) as string[];
+    const rows = await this.env.DB.prepare("SELECT id, name FROM players WHERE id IN (SELECT value FROM json_each(?))").bind(t.players).all<{ id: string; name: string | null }>();
+    const nameOf = new Map(rows.results.map(r => [r.id, r.name ?? ""]));
+    return { spec: {
+      cupId: s.cupId, code, slot: t.slot, draw: t.draw, final: !!t.final, players, names: players.map(p => nameOf.get(p) || "Player"),
+      pay1: t.pay1, pay2: t.pay2, deadline: t.deadline, seatedAt: t.deadline - backstopMs(c),
+      rules: { turnClockSec: c.turnClockSec, tableClockSec: c.tableClockSec, disconnectGraceSec: c.disconnectGraceSec, voice: c.voice, chat: c.chat, spectators: c.spectators, spectatorDelayMoves: c.spectatorDelayMoves, revealHands: c.revealHands },
+    } };
+  }
+
+  /** A table's signed result. `places` lists every seated player, 1st first; `stats` (from cup tables) is the
+      JSON the table signed: how it ended, moves, duration, points and cards per place, forfeits. Never cards. */
+  async report(code: string, places: string[], sig: string, stats?: string): Promise<{ ok: boolean; error?: string }> {
     const s = this.state();
     if (!s || s.phase !== "running") return { ok: false, error: "not-running" };
     const t = this.sql.exec("SELECT * FROM tbl WHERE code = ?", code).toArray()[0] as unknown as TableRow | undefined;
@@ -357,24 +378,21 @@ export class CupDirector extends DurableObject<DirectorEnv> {
     if (t.result) return { ok: true };                                   // already in: a retry is fine
     const seated = JSON.parse(t.players) as string[];
     if (places.length !== seated.length || [...places].sort().join() !== [...seated].sort().join()) return { ok: false, error: "bad-places" };
-    if (!this.env.PHONE_HMAC_KEY || sig !== await resultSig(this.env.PHONE_HMAC_KEY, s.cupId, code, places)) return { ok: false, error: "bad-signature" };
+    if (stats !== undefined && (typeof stats !== "string" || stats.length > 4096)) return { ok: false, error: "bad-stats" };
+    if (!this.env.PHONE_HMAC_KEY || sig !== await resultSig(this.env.PHONE_HMAC_KEY, s.cupId, code, places, stats)) return { ok: false, error: "bad-signature" };
     const now = Date.now();
-    await this.finishTable(s, this.cfg(), t, places, false, now);
+    await this.finishTables(s, this.cfg(), [{ t, places, late: false, stats: stats ?? null }], now);
     await this.tick(now);
     return { ok: true };
   }
 
-  private finishTable(s: State, c: CupConfig, t: TableRow, places: string[], late: boolean, now: number) {
-    return this.finishTables(s, c, [{ t, places, late }], now);
-  }
-
   /** Record results, pay 1st and 2nd, open Second Chance offers to eligible losers, mark the rest out.
       Money and the D1 record go in batches, so a whole slot of computer tables costs a handful of round trips. */
-  private async finishTables(s: State, c: CupConfig, items: { t: TableRow; places: string[]; late: boolean }[], now: number) {
+  private async finishTables(s: State, c: CupConfig, items: { t: TableRow; places: string[]; late: boolean; stats?: string | null }[], now: number) {
     const DB = this.env.DB, pot = cupAccount(s.cupId, c.currency);
     const transfers: Transfer[] = [], records: D1PreparedStatement[] = [];
     const label = (d: string) => (d === "W" ? "Main draw" : "Second Chance");
-    for (const { t, places, late } of items) {
+    for (const { t, places, late, stats } of items) {
       this.sql.exec("UPDATE tbl SET result = ?, late = ? WHERE code = ?", JSON.stringify(places), late ? 1 : 0, t.code);
       if (late) s.late++;
       if (t.draw !== "GF") {
@@ -387,8 +405,8 @@ export class CupDirector extends DurableObject<DirectorEnv> {
           for (const p of losers) this.sql.exec("INSERT OR IGNORE INTO offer (player, slot, expires) VALUES (?, ?, ?)", p, t.slot, expires);
         } else for (const p of losers) this.out(p, t.draw === "W" ? `main-r${s.wRound}` : `sc-slot${t.slot}`);
       }
-      records.push(DB.prepare("INSERT OR IGNORE INTO table_results (cup_id, slot, draw, table_code, places_json, pay1, pay2, late, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .bind(s.cupId, t.slot, t.draw, t.code, JSON.stringify(places), t.pay1, t.pay2, late ? 1 : 0, now));
+      records.push(DB.prepare("INSERT OR IGNORE INTO table_results (cup_id, slot, draw, table_code, places_json, pay1, pay2, late, reported_at, stats_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(s.cupId, t.slot, t.draw, t.code, JSON.stringify(places), t.pay1, t.pay2, late ? 1 : 0, now, stats ?? null));
     }
     this.save(s);
     for (let i = 0; i < transfers.length; i += BATCH) this.written.d1 += (await transferAll(DB, transfers.slice(i, i + BATCH))).rowsWritten;
@@ -560,7 +578,7 @@ export class CupDirector extends DurableObject<DirectorEnv> {
         token: this.env.PHONE_HMAC_KEY ? await seatToken(this.env.PHONE_HMAC_KEY, s.cupId, s.slot, t.code, seat, player, exp) : null, expires: exp };
     }
     return {
-      phase: s.phase, paused: s.paused, slot: s.slot, table,
+      phase: s.phase, paused: s.paused, slot: s.slot, mode: s.mode, table,
       offer: offer && (offer.bought || Number(offer.slot) === s.slot) ? { slot: offer.slot, expires: offer.expires, bought: !!offer.bought, fee: c.scFee, payFromWinnings: c.scPayFromWinnings } : null,
       finish: fin ? fin.how : null,
     };
@@ -580,16 +598,12 @@ export class CupDirector extends DurableObject<DirectorEnv> {
   async rowsWritten(): Promise<{ do: number; d1: number }> { const w = { ...this.written }; this.written = { do: 0, d1: 0 }; return w; }
 }
 
-/* ---------- helpers shared with the tables (Phase 6) ---------- */
+/* ---------- helpers shared with the tables (src/cup/tokens.ts) ---------- */
+export { seatToken, resultSig };
 
-/** Seat token (SE-4): HMAC over the cup, slot, table, seat, player and expiry. The table admits only its holder. */
-export async function seatToken(key: string, cupId: string, slot: number, code: string, seat: number, player: string, expires: number): Promise<string> {
-  return `${expires}.${await hmac(key, "seat", `${cupId}|${slot}|${code}|${seat}|${player}|${expires}`)}`;
-}
-/** The signature a table puts on its result. */
-export async function resultSig(key: string, cupId: string, code: string, places: string[]): Promise<string> {
-  return hmac(key, "result", `${cupId}|${code}|${places.join(",")}`);
-}
+/** From seating to the backstop: the table clock, plus the disconnect grace, plus a minute (the deal waits up to a
+    minute for everyone, src/cup/tablecore.ts JOIN_MS). A cup table always ends before it. */
+const backstopMs = (c: CupConfig) => (c.tableClockSec + c.disconnectGraceSec + 60) * 1000;
 
 /** What the cup page shows once the field is fixed: exact main-draw pay by round, Second Chance's base. */
 function scheduleOf(c: CupConfig, s: State) {

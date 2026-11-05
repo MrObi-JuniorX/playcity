@@ -25,6 +25,8 @@ export function aiMoveFair(s: Game): Move;
 export function applyMove(s: Game, mv: Move): Result;
 export function hiddenId(seat: number, at: number): number;
 export function seatView(s: Game, seat: number | null): Record<string, unknown>;
+/** A view made to look like a full game (face-down cards for the hands it doesn't show). */
+export function hydrate(v: Record<string, unknown>): Game;
 export function seatEvents(events: WhotEvent[], seat: number | null, over: boolean): WhotEvent[];
 export function adoptState(x: unknown, names: { name: string; type: "human" | "cpu" }[]): Game | null;
 export function tourPlan(s: Game, out: number): { mode: "none" | "round" | "tie" | "final" | "rematch"; elim: number[] };

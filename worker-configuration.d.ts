@@ -8,6 +8,7 @@ interface __BaseEnv_Env {
 	WHOT: DurableObjectNamespace<import("./src/index").WhotTable>;
 	CUP: DurableObjectNamespace<import("./src/index").CupDirector>;
 	CUP_GATE: DurableObjectNamespace<import("./src/index").CupGate>;
+	CUP_TABLE: DurableObjectNamespace<import("./src/index").CupTable>;
 }
 declare namespace Cloudflare {
 	interface GlobalProps {

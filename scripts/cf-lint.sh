@@ -20,6 +20,11 @@ done
 
 # Whot Cup (docs/whot-cup-prd.md): gates hold sockets only, so an idle gate hibernates for free.
 if grep -nE 'storage\.|\.sql\.' src/cup/gate.ts; then echo "❌ CupGate stays storage-free: keep state in socket attachments"; fail=1; fi
+# Cup tables (Phase 6) keep one row while they run and delete it after the reveal window.
+grep -q 'deleteAll' src/cup/table.ts || { echo "❌ src/cup/table.ts must delete its row (storage.deleteAll) when the table closes"; fail=1; }
+# No message serialises the game (PRD 8.2 rule 2): views are built from seatView or the public view only.
+if grep -nE 'JSON\.stringify\(((t|this\.t)\.)?g\b|JSON\.stringify\((t|this\.t|state)\)' src/cup/table.ts src/cup/tablecore.ts | grep -v 'cf-lint-allow'; then
+  echo "❌ A cup table serialises the whole game: build messages from seatView or the public view"; fail=1; fi
 # Hidden cards never reach a log (PRD 8.2 rule 4): no hand, market, deck or whole game in a console call.
 if grep -rnE 'console\.[a-z]+\(.*(\bhands?\b|\bmarket\b|\bdeck\b|\bt\.g\b|[(,] *g *[,)])' src --include='*.ts' | grep -v 'cf-lint-allow'; then
   echo "❌ A console call mentions cards or a game: log ids and counts only"; fail=1; fi

@@ -55,3 +55,16 @@ export async function bulkEnter(cup: { id: string; c: CupConfig }, ids: string[]
 }
 
 export const balance = async (account: string) => (await DB.prepare("SELECT balance FROM accounts WHERE id = ?").bind(account).first<number>("balance")) ?? 0;
+
+/** Signed-in sessions for bulk players: the Cookie header each one sends. */
+export async function sessionsFor(ids: string[]): Promise<Map<string, string>> {
+  const { sha256 } = await import("../../src/auth/crypto");
+  const now = Date.now(), out = new Map<string, string>(), stmts: D1PreparedStatement[] = [];
+  for (const id of ids) {
+    const tok = Array.from(crypto.getRandomValues(new Uint8Array(24)), b => b.toString(16).padStart(2, "0")).join("");
+    stmts.push(DB.prepare("INSERT INTO sessions (id, player_id, device_id, ip_hash, created_at, last_seen_at, expires_at) VALUES (?, ?, ?, 'ip', ?, ?, ?)").bind(await sha256(tok), id, `dev-${id}`, now, now, now + 86_400_000));
+    out.set(id, `__Host-pc_s=${tok}`);
+  }
+  await DB.batch(stmts);
+  return out;
+}

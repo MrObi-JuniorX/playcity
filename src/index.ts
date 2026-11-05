@@ -3,12 +3,13 @@ export { Lobby } from "./lobby";
 export { WhotTable } from "./whot";
 export { CupDirector } from "./cup/director";
 export { CupGate } from "./cup/gate";
+export { CupTable } from "./cup/table";
 import { authRoute, cleanup } from "./auth/routes";
 import { walletRoute } from "./wallet/routes";
 import { nightlyReconcile } from "./wallet/ledger";
 import { consoleRoute } from "./console/routes";
 import { consoleCleanup } from "./console/access";
-import { cupRoute } from "./cup/routes";
+import { cupRoute, cupTableRoute } from "./cup/routes";
 
 /* playcity edge Worker. Static game files are served by Workers Static Assets before this code runs.
    GET /api/ice            STUN (and TURN, when configured) servers for WebRTC
@@ -18,6 +19,7 @@ import { cupRoute } from "./cup/routes";
    GET /ws/lobby?code=     hold a spot in quick match while playing, or list a live match with live=1 (WebSocket)
    GET /ws/room/:code      invite room: host holds it, a guest knocks, then signaling or relay; role=watch to spectate
    GET /ws/whot/:code      a Whot card table: the table runs the game; people sit, watch, or take a computer's seat
+   GET /ws/cup/:slug/:code a cup table: ?token= to play your seat (signed in), or no token to watch, delayed
    /api/auth/*, /api/me    phone sign-in, sessions and the profile (src/auth/routes.ts)
    GET /api/wallet         the signed-in player's coins and history (src/wallet/routes.ts)
    /api/console/*          the admin console: passkeys, cups, templates, economy, audit, staff (src/console/routes.ts)
@@ -70,6 +72,8 @@ export default {
         if (!CODE.test(code)) return new Response("Bad table code", { status: 400 });
         return await env.WHOT.getByName(code).fetch(request);
       }
+      const cupTable = path.match(/^\/ws\/cup\/([a-z0-9-]{3,48})\/([A-HJ-NP-Z2-9]{10})$/);
+      if (cupTable) return await cupTableRoute(request, env, cupTable[1], cupTable[2]);
       return new Response("Not found", { status: 404 });
     } catch (err) {
       console.error(JSON.stringify({ msg: "request failed", path, error: String(err) }));

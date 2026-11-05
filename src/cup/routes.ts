@@ -170,3 +170,28 @@ async function secondChance(env: AuthEnv, req: Request, cup: CupRow): Promise<Re
   if (!r.ok) return fail(r.error === "insufficient-funds" ? 402 : 409, r.error ?? "failed");
   return json(r);
 }
+
+/* ---------- a cup table (Phase 6) ----------
+   GET /ws/cup/:slug/:code             watch: the public view, delayed (TB-7)
+   GET /ws/cup/:slug/:code?token=…     play: the seat token from /me, and the signed-in player it names (SE-4)
+
+   The table trusts only what this route tells it: which cup, which table and who is signed in. Anything a browser
+   sends in those headers is dropped first. A token only works with our own Origin, so another site can't open a
+   seat with a visitor's cookie. */
+const TABLE_HEADERS = ["X-Cup-Id", "X-Cup-Table", "X-Cup-Player"];
+
+export async function cupTableRoute(req: Request, env: AuthEnv, slug: string, code: string): Promise<Response> {
+  if (req.headers.get("Upgrade") !== "websocket") return new Response("Expected WebSocket", { status: 426 });
+  const cup = await env.DB.prepare("SELECT id, state FROM cups WHERE slug = ?").bind(slug).first<{ id: string; state: string }>();
+  if (!cup || !["running", "settled"].includes(cup.state)) return fail(404, "no-cup");
+  const url = new URL(req.url), headers = new Headers(req.headers);
+  for (const h of TABLE_HEADERS) headers.delete(h);
+  headers.set("X-Cup-Id", cup.id);
+  headers.set("X-Cup-Table", code);
+  if (url.searchParams.has("token")) {
+    if (req.headers.get("Origin") !== url.origin) return fail(403, "bad-origin");
+    const s = await currentSession(env, req);
+    if (s) headers.set("X-Cup-Player", s.playerId);
+  }
+  return env.CUP_TABLE.getByName(code).fetch(new Request(req.url, { headers }));
+}

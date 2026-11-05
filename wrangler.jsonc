@@ -14,13 +14,15 @@
       { "name": "LOBBY", "class_name": "Lobby" },
       { "name": "WHOT", "class_name": "WhotTable" },
       { "name": "CUP", "class_name": "CupDirector" },
-      { "name": "CUP_GATE", "class_name": "CupGate" }
+      { "name": "CUP_GATE", "class_name": "CupGate" },
+      { "name": "CUP_TABLE", "class_name": "CupTable" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["Room", "Lobby"] },
     { "tag": "v2", "new_sqlite_classes": ["WhotTable"] },
-    { "tag": "v3", "new_sqlite_classes": ["CupDirector", "CupGate"] }
+    { "tag": "v3", "new_sqlite_classes": ["CupDirector", "CupGate"] },
+    { "tag": "v4", "new_sqlite_classes": ["CupTable"] }
   ],
   // Whot Cup system of record: players, wallets, the ledger, cups (docs/whot-cup-prd.md, section 10).
   // No database_id: `wrangler deploy` creates the database on first deploy and writes its id back here.
