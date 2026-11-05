@@ -29,3 +29,25 @@ self.addEventListener('fetch', e => {
     }
   })());
 });
+
+/* Cup notifications (Web Push, docs/whot-cup-prd.md PX-4): "your table is ready", Second Chance offers, check-in,
+   the Grand Final. The payload is encrypted for this browser alone; it says what to show and where a tap goes,
+   and a tap only ever opens a page on this site. */
+self.addEventListener('push', e => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch (err) { return; }
+  if (!d || typeof d.title !== 'string') return;
+  e.waitUntil(self.registration.showNotification(d.title, {
+    body: typeof d.body === 'string' ? d.body : '', tag: typeof d.tag === 'string' ? d.tag : 'playcity', renotify: true,
+    icon: '/icons/icon-192.png', badge: '/icons/icon-192.png', data: { url: typeof d.url === 'string' ? d.url : '/' },
+  }));
+});
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  let url = new URL('/', location.origin);
+  try { const u = new URL(e.notification.data.url, location.origin); if (u.origin === location.origin) url = u; } catch (err) { /* keep the home page */ }
+  e.waitUntil((async () => {
+    for (const c of await self.clients.matchAll({ type: 'window', includeUncontrolled: true })) if (c.url === url.href && 'focus' in c) return c.focus();
+    return self.clients.openWindow(url.href);
+  })());
+});

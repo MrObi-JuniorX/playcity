@@ -14,7 +14,7 @@ import { fail, ipOf, json, readJson as body, sameOrigin, type Json } from "../ht
    POST  /api/auth/signout       this device
    POST  /api/auth/signout-all   every device (S-9)
    GET   /api/me                 the signed-in player
-   PATCH /api/me                 { name?, avatar?, adult?, weeklyLimit?, coolOff? }
+   PATCH /api/me                 { name?, avatar?, adult?, weeklyLimit?, coolOff?, smsCheckin? }
    GET   /api/dev/outbox         dev mode only: the last code sent to a number, for the local sign-in page */
 
 const SHAPES = ["circle", "triangle", "cross", "square", "star"] as const;
@@ -160,7 +160,7 @@ interface PlayerRow {
   id: string; phone_enc: string; phone_country: string; phone_last2: string; name: string | null;
   avatar_shape: string | null; avatar_color: string | null; adult_at: number | null;
   weekly_limit: number | null; weekly_limit_next: number | null; weekly_limit_next_at: number | null; weekly_limit_next_set: number;
-  cool_off_until: number | null; created_at: number;
+  cool_off_until: number | null; created_at: number; sms_checkin: number;
 }
 
 function view(p: PlayerRow) {
@@ -174,6 +174,7 @@ function view(p: PlayerRow) {
     weeklyLimit: p.weekly_limit,
     weeklyLimitNext: p.weekly_limit_next_set ? { value: p.weekly_limit_next, at: p.weekly_limit_next_at } : null,
     coolOffUntil: p.cool_off_until && p.cool_off_until > now ? p.cool_off_until : null,
+    smsCheckin: !!p.sms_checkin,
     complete: !!p.name && !!p.avatar_shape && p.adult_at !== null,
   };
 }
@@ -229,6 +230,10 @@ async function updateMe(req: Request, env: AuthEnv): Promise<Response> {
     const lower = next !== null && (cur === null || next <= cur);
     if (lower) { put("weekly_limit", next); put("weekly_limit_next", null); put("weekly_limit_next_at", null); put("weekly_limit_next_set", 0); }
     else { put("weekly_limit_next", next); put("weekly_limit_next_at", now + RAISE_DELAY_MS); put("weekly_limit_next_set", 1); }   // a raise, or removing the limit, waits 24 h
+  }
+  if ("smsCheckin" in b) {                                    // a text when check-in opens: the only SMS besides sign-in codes
+    if (typeof b.smsCheckin !== "boolean") return fail(400, "bad-sms");
+    put("sms_checkin", b.smsCheckin ? 1 : 0);
   }
   if ("coolOff" in b) {
     const ms = COOL_OFF[String(b.coolOff)];

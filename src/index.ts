@@ -9,7 +9,8 @@ import { walletRoute } from "./wallet/routes";
 import { nightlyReconcile } from "./wallet/ledger";
 import { consoleRoute } from "./console/routes";
 import { consoleCleanup } from "./console/access";
-import { cupRoute, cupTableRoute } from "./cup/routes";
+import { cupRoute, cupTableRoute, cupHubRoute } from "./cup/routes";
+import { pushRoute } from "./push/routes";
 
 /* playcity edge Worker. Static game files are served by Workers Static Assets before this code runs.
    GET /api/ice            STUN (and TURN, when configured) servers for WebRTC
@@ -20,6 +21,8 @@ import { cupRoute, cupTableRoute } from "./cup/routes";
    GET /ws/room/:code      invite room: host holds it, a guest knocks, then signaling or relay; role=watch to spectate
    GET /ws/whot/:code      a Whot card table: the table runs the game; people sit, watch, or take a computer's seat
    GET /ws/cup/:slug/:code a cup table: ?token= to play your seat (signed in), or no token to watch, delayed
+   GET /ws/cup/:slug/hub   a signed-in player's live line to their cup (src/cup/gate.ts)
+   /api/push/*             Web Push: the public key, subscribe and unsubscribe (src/push/routes.ts)
    /api/auth/*, /api/me    phone sign-in, sessions and the profile (src/auth/routes.ts)
    GET /api/wallet         the signed-in player's coins and history (src/wallet/routes.ts)
    /api/console/*          the admin console: passkeys, cups, templates, economy, audit, staff (src/console/routes.ts)
@@ -42,6 +45,7 @@ export default {
       if (path === "/api/wallet") return (await walletRoute(request, env, path))!;
       if (path.startsWith("/api/console/")) return (await consoleRoute(request, env, path))!;
       if (path.startsWith("/api/cups")) return (await cupRoute(request, env, path, ctx))!;
+      if (path.startsWith("/api/push/")) return (await pushRoute(request, env, path))!;
 
       if (path === "/api/match") {
         const game = (url.searchParams.get("game") || "flick").slice(0, 24);
@@ -72,6 +76,8 @@ export default {
         if (!CODE.test(code)) return new Response("Bad table code", { status: 400 });
         return await env.WHOT.getByName(code).fetch(request);
       }
+      const hub = path.match(/^\/ws\/cup\/([a-z0-9-]{3,48})\/hub$/);
+      if (hub) return await cupHubRoute(request, env, hub[1]);
       const cupTable = path.match(/^\/ws\/cup\/([a-z0-9-]{3,48})\/([A-HJ-NP-Z2-9]{10})$/);
       if (cupTable) return await cupTableRoute(request, env, cupTable[1], cupTable[2]);
       return new Response("Not found", { status: 404 });

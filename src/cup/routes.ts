@@ -5,6 +5,7 @@ import type { AuthEnv } from "../auth/env";
 import { cupAccount, cupSpec, playerAccount, playerSpec, transferStatements, ensureStatements } from "../wallet/ledger";
 import { openWallet } from "../wallet/wallet";
 import type { CupConfig } from "./config";
+import { gateName, shardOf } from "./gate";
 
 /* Public cup API (docs/whot-cup-prd.md, Phase 4).
    GET  /api/cups                       cups players can see now (edge-cached 5 s)
@@ -194,4 +195,20 @@ export async function cupTableRoute(req: Request, env: AuthEnv, slug: string, co
     if (s) headers.set("X-Cup-Player", s.playerId);
   }
   return env.CUP_TABLE.getByName(code).fetch(new Request(req.url, { headers }));
+}
+
+/* ---------- the hub (Phase 7) ----------
+   GET /ws/cup/:slug/hub   the signed-in player's live line to their cup: tables, results, offers, the cup's state.
+   Always the same gate for a player (shardOf), so the director can reach them with one call per gate. */
+export async function cupHubRoute(req: Request, env: AuthEnv, slug: string): Promise<Response> {
+  if (req.headers.get("Upgrade") !== "websocket") return new Response("Expected WebSocket", { status: 426 });
+  if (req.headers.get("Origin") !== new URL(req.url).origin) return fail(403, "bad-origin");
+  const cup = await env.DB.prepare("SELECT id, state FROM cups WHERE slug = ?").bind(slug).first<{ id: string; state: string }>();
+  if (!cup || !PUBLIC_STATES.includes(cup.state)) return fail(404, "no-cup");
+  const s = await currentSession(env, req);
+  if (!s) return fail(401, "signed-out");
+  const headers = new Headers(req.headers);
+  for (const h of TABLE_HEADERS) headers.delete(h);
+  headers.set("X-Cup-Player", s.playerId);
+  return env.CUP_GATE.getByName(gateName(cup.id, shardOf(s.playerId))).fetch(new Request(req.url, { headers }));
 }

@@ -209,7 +209,7 @@ async function t2(N: number) {
   await d.tick(c.registrationClosesAt); await d.tick(c.startsAt - 300_000);
   await d.rowsWritten();
   let now = c.startsAt, slowest = 0, totalDO = 0, totalD1 = 0;
-  const perSlot: { slot: number; ms: number; do: number; d1: number }[] = [];
+  const perSlot: { slot: number; ms: number; do: number; d1: number; gates: number }[] = [];
   for (let i = 0; i < 40; i++) {
     const t0 = Date.now();
     await d.tick(now);
@@ -225,6 +225,7 @@ async function t2(N: number) {
   expect(await reconcileCup(DB, cup.id, true)).toEqual([]);
   expect(totalDO / N).toBeLessThanOrEqual(5);                              // the director's own storage
   expect(totalD1 / N).toBeLessThanOrEqual(10);                             // payouts and table records in D1
+  expect(Math.max(...perSlot.map(s => s.gates))).toBeLessThanOrEqual(32);  // the hub: one call per gate per slot (Phase 7)
 }
 
 describe("T2 cost", () => {

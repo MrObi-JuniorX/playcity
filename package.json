@@ -11,11 +11,13 @@
     "lint:cf": "bash scripts/cf-lint.sh",
     "build:console": "esbuild src/cup/config.ts --bundle --format=esm --target=es2022 --outfile=public/console/cup.js --minify --sourcemap --legal-comments=none",
     "build": "npm run build:console",
+    "vapid": "node scripts/vapid.mjs",
     "test:t2": "CUP_T2_FULL=1 vitest run --config vitest.worker.config.mts test/worker/director.test.ts -t T2"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.4.0",
     "@cloudflare/workers-types": "^5.20261009.1",
+    "http_ece": "^1.2.1",
     "typescript": "^7.0.2",
     "vitest": "^5.0.3",
     "wrangler": "^4.149.0"

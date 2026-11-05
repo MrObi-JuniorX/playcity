@@ -1,5 +1,5 @@
 import { env, exports } from "cloudflare:workers";
-import { runInDurableObject, runDurableObjectAlarm } from "cloudflare:test";
+import { runInDurableObject } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 import * as W from "../../public/whot/engine.js";
 import { seatToken } from "../../src/cup/tokens";
@@ -279,8 +279,10 @@ describe("T2: cup table cost", () => {
     expect(rows).toBeLessThanOrEqual(moves + 1);                            // one per move, plus the report's
     // The director has the result, so after the reveal window the row and the alarm go, and every socket is told.
     await poll(() => director(cup.id).tables(1), ts => !!ts.find(x => x.code === t.code)?.result);
-    await peek(stub, async (inst: any) => { inst.load().closeAt = Date.now() - 1; });
-    expect(await runDurableObjectAlarm(stub as unknown as DurableObjectStub)).toBe(true);
+    await poll(() => peek(stub, async (inst: any) => inst.load()?.report.state), s => s === "sent");    // the table knows it landed
+    expect(await peek(stub, async (_i, st) => (await st.storage.getAlarm()) !== null)).toBe(true);       // the clean-up is booked
+    // Skip the 90 s reveal window: run the clean-up now (the table's own alarm handler, not a real alarm in flight).
+    await peek(stub, async (inst: any) => { inst.load().closeAt = Date.now() - 1; await inst.alarm(); });
     await Promise.all(socks.map(s => s.until(() => s.closed()?.code === 4005)));
     expect(await peek(stub, async (_i, st) => [st.storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 't'").toArray().length, await st.storage.getAlarm()])).toEqual([0, null]);
     // And it can't be brought back: the director says the table is finished.

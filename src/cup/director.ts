@@ -5,6 +5,7 @@ import { commitment, newSeed, seatTables, seededOrder } from "./seating";
 import { cupAccount, cupSpec, ISSUER, issuerSpec, LedgerError, PLATFORM, platformSpec, playerAccount, transferAll, transferStatements, type Transfer } from "../wallet/ledger";
 import { resultSig, seatToken } from "./tokens";
 import type { TableSpec } from "./tablecore";
+import { GATE_SHARDS, gateName, shardOf, type GateEvent } from "./gate";
 import type { AuthEnv } from "../auth/env";
 
 /* CupDirector: one per cup (docs/whot-cup-prd.md, section 7, Phases 4-5). It owns the cup's clock and its rounds.
@@ -56,6 +57,11 @@ export class CupDirector extends DurableObject<DirectorEnv> {
   private sqlStore = this.ctx.storage.sql;
   /** Rows this object and D1 wrote, for the cost tests (cost protocol T2). */
   private written = { do: 0, d1: 0 };
+  /** Gate calls made since the last read (the budget: one per shard per slot). */
+  private gateCalls = 0;
+  /* What players need to hear, gathered while a tick runs and sent once at its end (flushNotes). */
+  private notes: GateEvent[] = [];
+  private noteAll: Record<string, unknown> | null = null;
   private sql = { exec: (q: string, ...args: unknown[]) => { const cur = this.sqlStore.exec(q, ...args); const rows = cur.toArray(); this.written.do += cur.rowsWritten; return { toArray: () => rows }; } };
 
   constructor(ctx: DurableObjectState, env: DirectorEnv) {
@@ -107,6 +113,7 @@ export class CupDirector extends DurableObject<DirectorEnv> {
     if (!s || s.phase === "settled" || s.phase === "cancelled") throw new Error("nothing to pause");
     s.paused = on; this.save(s);
     await this.publishLive(s);
+    await this.flushNotes(s.cupId);
     if (!on) await this.tick(Date.now());
   }
 
@@ -129,6 +136,7 @@ export class CupDirector extends DurableObject<DirectorEnv> {
       s = this.state()!;
       if (`${s.phase}:${s.slot}:${s.gfCode}` === before) break;
     }
+    await this.flushNotes(s.cupId);
     await this.setNextAlarm(s, c, now);
     return { phase: s.phase, slot: s.slot };
   }
@@ -335,6 +343,7 @@ export class CupDirector extends DurableObject<DirectorEnv> {
   /** After seating: in simulate mode every table finishes at once; then publish progress. */
   private async afterSeating(s: State, c: CupConfig, now: number) {
     this.flushCodes(s.slot);
+    if (s.mode === "external") await this.tellSeated(s, c);
     if (s.mode === "simulate") {
       const items = [];
       for (const t of this.tablesOf(s.slot)) items.push({ t, places: await this.randomOrder(t), late: false });
@@ -400,11 +409,17 @@ export class CupDirector extends DurableObject<DirectorEnv> {
         if (t.pay1 > 0) transfers.push({ idem: `pay:${s.cupId}:${t.code}:1`, from: pot, to: playerAccount(places[0], c.currency), amount: t.pay1, currency: c.currency, kind: "table_pay", playerId: places[0], cupId: s.cupId, memo: `${label(t.draw)} table, 1st` });
         if (size > 1 && t.pay2 > 0) transfers.push({ idem: `pay:${s.cupId}:${t.code}:2`, from: pot, to: playerAccount(places[1], c.currency), amount: t.pay2, currency: c.currency, kind: "table_pay", playerId: places[1], cupId: s.cupId, memo: `${label(t.draw)} table, 2nd` });
         const losers = places.slice(advanceFrom(c, t.draw as Draw, t.n, size, !!t.final));
-        if (t.draw === "W" && c.scEnabled && s.wRound <= c.scCutoffRound) {
-          const expires = now + c.scBuyWindowSec * 1000;
-          for (const p of losers) this.sql.exec("INSERT OR IGNORE INTO offer (player, slot, expires) VALUES (?, ?, ?)", p, t.slot, expires);
-        } else for (const p of losers) this.out(p, t.draw === "W" ? `main-r${s.wRound}` : `sc-slot${t.slot}`);
-      }
+        const offered = t.draw === "W" && c.scEnabled && s.wRound <= c.scCutoffRound;
+        const expires = now + c.scBuyWindowSec * 1000;
+        if (offered) for (const p of losers) this.sql.exec("INSERT OR IGNORE INTO offer (player, slot, expires) VALUES (?, ?, ?)", p, t.slot, expires);
+        else for (const p of losers) this.out(p, t.draw === "W" ? `main-r${s.wRound}` : `sc-slot${t.slot}`);
+        // Everyone at the table hears how it went; a loser with an offer also gets a notification if the hub is shut.
+        places.forEach((p, i) => {
+          const offer = offered && losers.includes(p) ? { expires, fee: c.scFee, payFromWinnings: c.scPayFromWinnings } : null;
+          this.notes.push({ player: p, msg: { t: "result", slot: t.slot, code: t.code, draw: t.draw, place: i + 1, of: size, pay: i === 0 ? t.pay1 : i === 1 && size > 1 ? t.pay2 : 0, through: i < size - losers.length, offer },
+            ...(offer ? { note: { title: "Second Chance", body: `You can buy back in for ${c.scFee} coins. The offer closes in ${c.scBuyWindowSec} seconds.`, url: `/cup/?c=${c.slug}`, tag: `offer-${s.cupId}`, ttl: c.scBuyWindowSec } } : {}) });
+        });
+      } else places.forEach((p, i) => this.notes.push({ player: p, msg: { t: "result", slot: t.slot, code: t.code, draw: "GF", place: i + 1, of: places.length, pay: 0, through: false, offer: null } }));
       records.push(DB.prepare("INSERT OR IGNORE INTO table_results (cup_id, slot, draw, table_code, places_json, pay1, pay2, late, reported_at, stats_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(s.cupId, t.slot, t.draw, t.code, JSON.stringify(places), t.pay1, t.pay2, late ? 1 : 0, now, stats ?? null));
     }
@@ -516,6 +531,7 @@ export class CupDirector extends DurableObject<DirectorEnv> {
     this.sql.exec("DELETE FROM offer");
     s.phase = "cancelled"; this.save(s); this.put("settledAt", now);
     await this.setCupState(s, "cancelled");
+    await this.flushNotes(s.cupId);
     await this.ctx.storage.setAlarm(now + RETAIN_MS);
   }
 
@@ -538,10 +554,54 @@ export class CupDirector extends DurableObject<DirectorEnv> {
   /* ---------- what players and admins see ---------- */
 
   private async setCupState(s: State, state: string) {
-    await this.env.DB.prepare("UPDATE cups SET state = ?, live_json = ?, updated_at = ? WHERE id = ?").bind(state, JSON.stringify(this.liveOf(s)), Date.now(), s.cupId).run();
+    const live = this.liveOf(s);
+    await this.env.DB.prepare("UPDATE cups SET state = ?, live_json = ?, updated_at = ? WHERE id = ?").bind(state, JSON.stringify(live), Date.now(), s.cupId).run();
+    this.noteAll = { t: "cup", state, live };
+    if (state === "check-in") {
+      // "Check-in is open" (PX-4): everyone with a seat or a waitlist place who hasn't checked in yet.
+      const c = this.cfg();
+      const rows = (await this.env.DB.prepare("SELECT player_id FROM registrations WHERE cup_id = ? AND state IN ('seated', 'waitlist') AND checked_in_at IS NULL").bind(s.cupId).all<{ player_id: string }>()).results;
+      const body = `Check-in for ${c.name} is open. Tap "I'm here" before ${new Date(c.startsAt - c.checkInCloseBeforeStartSec * 1000).toISOString().slice(11, 16)} UTC to keep your seat.`;
+      for (const r of rows) this.notes.push({ player: r.player_id, msg: { t: "checkin" }, note: { title: "Check-in is open", body, url: `/cup/?c=${c.slug}`, tag: `checkin-${s.cupId}`, ttl: c.checkInCloseBeforeStartSec }, sms: `${c.name}: check-in is open. Open playcity and tap "I'm here" to keep your seat.` });
+    }
   }
   private async publishLive(s: State) {
-    await this.env.DB.prepare("UPDATE cups SET live_json = ? WHERE id = ?").bind(JSON.stringify(this.liveOf(s)), s.cupId).run();
+    const live = this.liveOf(s);
+    await this.env.DB.prepare("UPDATE cups SET live_json = ? WHERE id = ?").bind(JSON.stringify(live), s.cupId).run();
+    this.noteAll ??= { t: "live", live };
+  }
+
+  /** Each seated player: "your table is ready", with the seat token, so nobody has to ask for it (external mode).
+      At the Grand Final, everyone still in the cup hears it has started. */
+  private async tellSeated(s: State, c: CupConfig) {
+    const key = this.env.PHONE_HMAC_KEY;
+    const tables = this.tablesOf(s.slot);
+    for (const t of tables) {
+      const players = JSON.parse(t.players) as string[];
+      await Promise.all(players.map(async (p, seat) => this.notes.push({
+        player: p,
+        msg: { t: "table", slot: s.slot, code: t.code, draw: t.draw, final: !!t.final, seat, pay1: t.pay1, pay2: t.pay2, expires: t.deadline, token: key ? await seatToken(key, s.cupId, s.slot, t.code, seat, p, t.deadline) : null },
+        note: { title: t.draw === "GF" ? "The Grand Final is ready" : "Your table is ready", body: t.draw === "GF" ? "You're in the Grand Final. Tap to take your seat." : `Round ${s.slot}: ${t.draw === "W" ? "main draw" : "Second Chance"}. Tap to take your seat.`, url: `/whot/?cup=${c.slug}`, tag: `table-${s.cupId}`, ttl: c.disconnectGraceSec + 60 },
+      })));
+    }
+    if (tables.length === 1 && tables[0].draw === "GF") {
+      const at = new Set(JSON.parse(tables[0].players) as string[]);
+      const rows = (await this.env.DB.prepare("SELECT player_id FROM registrations WHERE cup_id = ? AND state = 'playing'").bind(s.cupId).all<{ player_id: string }>()).results;
+      for (const r of rows) if (!at.has(r.player_id)) this.notes.push({ player: r.player_id, msg: { t: "gf", code: tables[0].code }, note: { title: "The Grand Final is live", body: `${c.name}: the last four are playing now. Come and watch.`, url: `/cup/?c=${c.slug}`, tag: `gf-${s.cupId}`, ttl: 900 } });
+    }
+  }
+
+  /** Send what was gathered: at most one call per gate. A gate that fails only costs its players a message. */
+  private async flushNotes(cupId: string) {
+    const events = this.notes, all = this.noteAll;
+    this.notes = []; this.noteAll = null;
+    if (!events.length && !all) return;
+    const by = new Map<number, GateEvent[]>();
+    for (const e of events) { const k = shardOf(e.player); (by.get(k) ?? by.set(k, []).get(k)!).push(e); }
+    const shards = all ? Array.from({ length: GATE_SHARDS }, (_, i) => i) : [...by.keys()];
+    this.gateCalls += shards.length;
+    await Promise.all(shards.map(sh => this.env.CUP_GATE.getByName(gateName(cupId, sh)).deliver(by.get(sh) ?? [], all ?? undefined)
+      .catch(err => console.warn(JSON.stringify({ msg: "gate delivery failed", cup: cupId, shard: sh, error: String(err) })))));
   }
   private liveOf(s: State) {
     const t = s.slot ? this.tablesOf(s.slot) : [];
@@ -595,7 +655,7 @@ export class CupDirector extends DurableObject<DirectorEnv> {
     return this.sql.exec("SELECT player, slot, expires FROM offer WHERE bought = 0 AND slot = ? ORDER BY player", s?.slot ?? -1).toArray() as unknown as { player: string; slot: number; expires: number }[];
   }
   /** Rows written by this object since it woke, and by its D1 calls: read and reset (cost tests). */
-  async rowsWritten(): Promise<{ do: number; d1: number }> { const w = { ...this.written }; this.written = { do: 0, d1: 0 }; return w; }
+  async rowsWritten(): Promise<{ do: number; d1: number; gates: number }> { const w = { ...this.written, gates: this.gateCalls }; this.written = { do: 0, d1: 0 }; this.gateCalls = 0; return w; }
 }
 
 /* ---------- helpers shared with the tables (src/cup/tokens.ts) ---------- */
