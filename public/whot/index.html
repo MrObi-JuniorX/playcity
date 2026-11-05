@@ -168,6 +168,7 @@ h1,h2,h3,p{margin:0}
 .ticker{font-size:.84rem; color:var(--muted); min-height:1.2em}
 .ticker.hit{color:var(--accent)} .ticker.warn{color:var(--danger)} .ticker.ok{color:var(--good)}
 .actions{display:grid; grid-template-columns:1fr 1.5fr; gap:10px; padding-block:6px calc(10px + env(safe-area-inset-bottom,0px))}
+a.btn{display:inline-flex; align-items:center; justify-content:center; text-decoration:none; color:inherit}
 .btn{min-height:50px; padding:0 18px; border-radius:14px; border:1.5px solid var(--line); background:rgba(7,28,33,.6); font-weight:700; font-size:1rem; letter-spacing:.01em}
 .btn.primary{background:var(--accent); border-color:var(--accent); color:var(--accent-ink)}
 .btn.danger{border-color:var(--danger); color:var(--danger)}
@@ -540,6 +541,7 @@ body:has(#game:not([hidden])) #app{max-width:1060px}
         <span id="visSlot"></span>
         <button class="chip-btn icon" id="soundBtn" type="button" aria-label="Sound settings"></button>
         <button class="chip-btn" id="rulesBtn2" type="button">Rules</button>
+        <button class="chip-btn" id="sayBtn" type="button" hidden>Say</button>
         <button class="chip-btn" id="logBtn" type="button">Log</button>
         <button class="chip-btn" id="leaveBtn" type="button">Leave</button>
       </div>

@@ -31,7 +31,8 @@ let vis=null;     // the Public/Private and Share control in the top bar (shared
 const net={on:false,ws:null,code:null,you:null,seats:[],out:[],listed:false,lister:false,tally:null,round:0,watching:0,
   queue:[],pumping:false,pre:null,dl:0,dlTurn:-1,retry:0,closing:false,create:null,sit:false,shownRound:-1,
   lobby:null,lobbyKey:'',ping:null,state:'',watchdog:null,
-  key:'',trusted:false,asks:[],asking:null,seenAsks:new Set(),wasAsking:false};
+  key:'',trusted:false,asks:[],asking:null,seenAsks:new Set(),wasAsking:false,
+  cup:null,cupMeta:null,cupEnd:0};     // cup: a Whot Cup table ({slug,code,token,back}); cupMeta: the table's cup state
 const baseTitle=document.title;
 
 function sym(sh,cls){return '<svg class="sym '+(cls||'')+'" viewBox="0 0 24 24" aria-hidden="true"><use href="#s-'+sh+'"/></svg>';}
@@ -166,6 +167,12 @@ function showLog(){
   openSheet('<h2>Move log</h2><ul class="log-list">'+(items.length?items.map(l=>'<li class="'+l.kind+'">'+esc(l.msg)+'</li>').join(''):'<li>Nothing yet.</li>')+'</ul>');
 }
 function showLeave(){
+  if(net.cup){
+    const seated=net.you!==null&&G&&!G.over;
+    openSheet('<h2>Leave the table?</h2><p class="rules-p">'+(seated?'This is a cup table: the computer plays your cards while you are away, and if you are not back soon you forfeit it and finish last.':'You can come back to the cup page any time.')+'</p>'+
+      '<div class="sheet-actions"><button class="btn" type="button" id="stayBtn">'+(seated?'Keep playing':'Stay')+'</button><button class="btn danger" type="button" id="leaveYes">Leave</button></div>');
+    return;
+  }
   if(net.on){
     const seated=net.you!==null;
     openSheet('<h2>Leave the table?</h2><p class="rules-p">'+(seated?'The computer takes over your cards. You can come back to your seat with the same link while the computer still has it.':'You are watching this table.')+'</p>'+
@@ -579,7 +586,12 @@ function renderTop(){
   tag.title=down?'':w+(w===1?' person is':' people are')+' watching';
   tag.className='net-tag'+(net.state==='down'?' warn':'');
   /* Public or Private, and Share. A game against the computer goes online, Public, as it starts. */
-  if(vis){vis.hidden=!(net.on||canOpenOnline()); vis.paint();}
+  if(vis){vis.hidden=!!net.cup||!(net.on||canOpenOnline()); vis.paint();}
+  if(net.cup){                         // a cup table: the table clock, and the preset phrases
+    const left=net.cupEnd&&G&&!G.over?Math.max(0,Math.ceil((net.cupEnd-Date.now())/1000)):null;
+    if(left!==null||down){tag.hidden=false; tag.textContent=down?'Reconnecting…':'Table '+Math.floor(left/60)+':'+String(left%60).padStart(2,'0')+(w?' · '+w+' watching':''); tag.className='net-tag'+(down||left<=60?' warn':'');}
+    $('#sayBtn').hidden=!(net.you!==null&&net.cupMeta&&net.cupMeta.chat.length&&G&&!G.over);
+  }
   renderAsks();
   welcomeBack();
 }
@@ -602,13 +614,14 @@ function renderSeats(){
     const talking=voice.talking.has(seatVid(i));
     const backs=me?'':Array.from({length:Math.min(shown,7)},()=>backHTML()).join('')+(shown>7?'<span class="more">+'+(shown-7)+'</span>':'');
     const clock=active&&left!==null&&p.type==='human'&&left<=20?'<span class="clock'+(left<=8?' low':'')+'">0:'+String(left).padStart(2,'0')+'</span>':'';
-    const sit=net.on&&net.you===null&&p.type==='cpu'?'<button class="sit-btn" type="button" data-sit="'+i+'"'+(net.asking?' disabled':'')+'>'+(canSitNow()?'Sit here':'Ask to sit')+'</button>':'';
+    const sit=net.on&&!net.cup&&net.you===null&&p.type==='cpu'?'<button class="sit-btn" type="button" data-sit="'+i+'"'+(net.asking?' disabled':'')+'>'+(canSitNow()?'Sit here':'Ask to sit')+'</button>':'';
     const initial=(p.name.trim()[0]||'?').toUpperCase();
-    const kind=p.type==='cpu'&&net.on?'open':'';   // the CPU badge on the avatar already says computer
+    const cm=net.cup&&net.cupMeta;
+    const kind=cm?(cm.forfeit[i]?'forfeited':!cm.here[i]?'away':''):p.type==='cpu'&&net.on?'open':'';   // the CPU badge on the avatar already says computer
     return '<div class="seat pos-'+pos+(active?' active':'')+(talking?' talking':'')+(me?' me':'')+'" data-seat="'+i+'">'+
       '<div class="avatar s'+(i%4)+'">'+esc(initial)+(p.type==='cpu'?'<i class="cpu">CPU</i>':'')+'</div>'+
       '<div class="seat-info"><span class="seat-name">'+esc(me&&p.name!=='You'?p.name+' (you)':p.name)+'</span>'+
-        '<span class="seat-sub">'+(me?'Your seat':'<b class="count">'+shown+'</b> card'+(shown===1?'':'s'))+(shown===1&&!me?'<span class="last">1!</span>':'')+(kind&&!me?' · '+kind:'')+clock+'</span>'+
+        '<span class="seat-sub">'+(me?(net.cup?cupClock():'Your seat'):'<b class="count">'+shown+'</b> card'+(shown===1?'':'s'))+(shown===1&&!me?'<span class="last">1!</span>':'')+(kind&&!me?' · '+kind:'')+clock+'</span>'+
         '<canvas class="wave" width="120" height="32" aria-hidden="true"></canvas></div>'+
       (backs?'<div class="mini-fan">'+backs+'</div>':'')+sit+'</div>';
   }).join('');
@@ -647,7 +660,8 @@ function renderStatus(){
       ?'Play 2s to pass it on, or pick up.'
       :'Each 5 you play blocks 3 of it. Block less and you pick the rest.')+clk; cls+=' alert';
   }
-  else if(nobodySeated()){txt='Table paused. Take a seat to carry on.';}
+  else if(net.cup&&net.you===null){txt='Watching '+(net.cupMeta?net.cupMeta.delay:3)+' moves behind the table. No hidden cards are shown.';}
+  else if(nobodySeated()&&!net.cup){txt='Table paused. Take a seat to carry on.';}
   else if(net.on&&net.grace&&net.grace.seat===G.current&&net.grace.until>Date.now()){txt='Waiting for '+net.grace.name+' to reconnect…';}
   else if(cur.type==='cpu'){txt=cur.name+' is thinking…';}
   else if(net.on&&G.current!==v){txt=(G.hold?cur.name+' '+vb(cur.name,'plays','play')+' again.':'Waiting for '+cur.name+'…')+clk;}
@@ -844,6 +858,7 @@ function showResult(){
 /* The end-of-round sheet. With three or more players (two or more of them people) it is a knock-out: the loser goes
    out and the rest are asked to continue without them, round after round, until a champion is left. */
 function renderResult(){
+  if(net.cup) return renderCupResult();
   const T=net.on?net.tally:tally;
   const outNames=net.on?(net.out||[]):field.filter(f=>f.out).map(f=>f.name);
   const plan=tourPlan(G,outNames.length);
@@ -893,6 +908,7 @@ function renderResult(){
   $('#sheetClose').hidden=!!(G&&G.over&&(!net.on||net.you!==null)&&!meOut);
 }
 function toSetup(){
+  if(net.cup){const back=net.cup.back; leaveOnline(); location.href=back; return;}      // a cup table: back to the cup page
   ui.token++; clearFlyers(); clearTimeout(ui.timer);
   if(net.on) leaveOnline();
   G=null; ui.phase='setup'; ui.busy=false;
@@ -905,6 +921,8 @@ function toSetup(){
 
 /* =====================  ONLINE  ===================== */
 const CODE_RE=/^[A-HJ-NP-Z2-9]{5}$/;
+const CUP_CODE_RE=/^[A-HJ-NP-Z2-9]{10}$/;      // a Whot Cup table (see WHOT CUP TABLES below)
+const PLACE=['','1st','2nd','3rd','4th'];
 function newCode(){const A='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s=''; for(let i=0;i<5;i++) s+=A[rand(A.length)]; return s;}
 function myId(){
   let id=''; try{id=localStorage.getItem('whot-id')||'';}catch(e){/* private mode */}
@@ -954,7 +972,7 @@ function connect(code,o){
   if(o.create) q.set('create','1');
   if(o.sit) q.set('sit','1');
   if(net.key) q.set('k',net.key);
-  const ws=new WebSocket(wsBase()+'/ws/whot/'+code+'?'+q);
+  const ws=new WebSocket(net.cup?wsBase()+'/ws/cup/'+net.cup.slug+'/'+net.cup.code+(net.cup.token?'?token='+encodeURIComponent(net.cup.token):''):wsBase()+'/ws/whot/'+code+'?'+q);
   net.ws=ws;
   ws.onopen=()=>{net.state='up'; net.retry=0; clearInterval(net.ping); net.ping=setInterval(()=>{if(ws.readyState===1) ws.send('ping');},25000); if(G) renderTop();};
   ws.onmessage=e=>{
@@ -963,6 +981,9 @@ function connect(code,o){
     if(m.t==='empty'){if(net.create) ws.send(JSON.stringify(net.create)); return;}
     if(m.t==='nope'){onNope(m); return;}
     if(m.t==='rtc'){voice.receive(m); return;}
+    if(m.t==='wait'){cupWait(m); return;}
+    if(m.t==='chat'){toast(m.name+': '+m.text,2600); return;}
+    if(m.t==='moved'){if(net.cup) net.cup.token=null; toast('You opened this table on another device, so this one is watching.',4200); return;}
     if(m.t==='talk'){voice.heard(m); return;}
     if(m.t==='denied'){
       net.asking=null; renderAsks();
@@ -977,6 +998,7 @@ function connect(code,o){
     if(net.ws!==ws||net.closing) return;
     if(net.offline&&net.offline.G){stayOffline(); return;}       // never got online: carry on offline
     if(e.code===4009&&net.create){connect(newCode(),{create:true}); return;}            // code taken: draw another
+    if(net.cup&&e.code>=4000){cupClosed(e.code,e.reason); return;}
     if(e.code===4004||e.code===4010){
       const msg=e.code===4004?'No table with that code. It may have closed.':'That table is full.';
       net.on=false; net.ws=null;
@@ -988,7 +1010,7 @@ function connect(code,o){
     if(net.retry++<8) setTimeout(()=>{if(net.on&&net.ws===ws) connect(code,{create:false,sit:false});},Math.min(8000,600*net.retry));
     else{toast('Lost the connection to the table.'); toSetup();}
   };
-  history.replaceState(null,'','?t='+code);
+  history.replaceState(null,'',net.cup?'?cup='+net.cup.slug+(net.cup.token?'':'&watch='+net.cup.code):'?t='+code);
 }
 function leaveOnline(){
   net.closing=true; clearInterval(net.ping); clearTimeout(net.watchdog); voice.stop();
@@ -1039,7 +1061,8 @@ async function applyMsg(m,backlog){
   voiceState={online:true,me:m.voice.me,peers:m.voice.peers,all:!!m.voice.all,owner:!!m.voice.owner};
   voice.update(voiceState);
   if(m.left!==undefined){net.dl=m.recv+m.left; net.dlTurn=m.dlTurn;}
-  if(was!==null&&was!==undefined&&m.you===null&&G&&!G.over&&!m.mine) toast('You are watching now. The computer has your cards.');
+  if(m.cup){net.cupMeta=m.cup; net.cupEnd=m.cup.endsIn!=null?m.recv+m.cup.endsIn:0;}
+  if(!net.cup&&was!==null&&was!==undefined&&m.you===null&&G&&!G.over&&!m.mine) toast('You are watching now. The computer has your cards.');
   if(m.kind==='deal'&&was!==null&&was!==undefined&&m.you===null) toast('You are out of this one. You can keep watching.',4200);
   updateLobby();
   const tok=ui.token, fast=reduce||backlog>3||document.hidden;
@@ -1219,6 +1242,8 @@ document.addEventListener('click',e=>{
   if(t.closest('#soundBtn')){showSound(); return;}
   if(t.closest('#sndTest')){Sound.fx('whot'); Sound.say('Whot! Stars, please.',2); return;}
   if(t.closest('#logBtn')){showLog(); return;}
+  if(t.closest('#sayBtn')){showSay(); return;}
+  const say=t.closest('[data-say]'); if(say){netSend({t:'chat',id:+say.dataset.say}); closeSheet(); return;}
   if(t.closest('#leaveBtn')){showLeave(); return;}
   if(t.closest('#standBtn')){closeSheet(); netSend({t:'stand'}); return;}
   if(t.closest('#stayBtn')||t.closest('#sheetBack')||t.closest('#sheetClose')){if(!G||!G.over||ui.sheet!=='result'||(net.on&&net.you===null)||!$('#sheetClose').hidden){ui.userClose=true; closeSheet();} return;}
@@ -1279,6 +1304,8 @@ window.addEventListener('resize',()=>{if(G) renderHand();});   // the number of 
 // the turn clock: redraw once a second while one is running
 setInterval(()=>{
   if(net.on&&G&&!ui.busy&&clockLeft()!==null){renderSeats(); renderStatus();}
+  if(net.cup&&G&&!G.over&&!ui.busy){renderTop(); renderSeats();}   // the table clock
+  if(net.cup&&ui.sheet==='cupwait'&&net.cupMeta) cupWait(null);    // the deal countdown
   if(net.on&&(net.asking||net.asks.length)) renderAsks();      // the countdowns
 },1000);
 document.addEventListener('visibilitychange',()=>{
@@ -1344,6 +1371,88 @@ function welcomeBack(){
     '<div class="sheet-actions"><button class="btn" type="button" id="wbKeep">Keep watching</button><button class="btn primary" type="button" id="wbGo">Continue as '+esc(m.name)+'</button></div>');
 }
 document.addEventListener('visibilitychange',()=>{if(!document.hidden) welcomeBack();});
-if(qt) joinNamed(qt,qs.get('w')!=='1',qk||undefined); else refreshTables();   // w=1: arrived to watch
+if(qs.get('cup')) cupJoin(qs.get('cup'),qs.get('watch'));       // a Whot Cup table: your seat, or watching one
+else if(qt) joinNamed(qt,qs.get('w')!=='1',qk||undefined); else refreshTables();   // w=1: arrived to watch
+
+/* =====================  WHOT CUP TABLES  =====================
+   /whot/?cup=<slug> opens your table in that cup (the seat token comes from /api/cups/<slug>/me, never the URL);
+   /whot/?cup=<slug>&watch=<code> watches a table, a few moves behind with no hidden cards. The cup table speaks the
+   same messages as a free table, so everything above draws it; what differs: no seat requests, invites, rematches
+   or sharing, a table clock, forfeits, preset phrases, and a result that shows the table's pay. */
+function cupNote(msg,back){
+  openSheet('<h2>Whot Cup</h2><p class="rules-p">'+esc(msg)+'</p><div class="sheet-actions"><a class="btn primary" href="'+esc(back)+'">Back to the cup</a></div>');
+  ui.sheet='cupnote';
+}
+async function cupJoin(slug,watch){
+  slug=String(slug).toLowerCase().replace(/[^a-z0-9-]/g,'').slice(0,48);
+  const back='/cup/?c='+encodeURIComponent(slug);
+  if(watch){
+    watch=String(watch).toUpperCase();
+    if(!CUP_CODE_RE.test(watch)) return cupNote('That table link is not complete.',back);
+    net.cup={slug,code:watch,token:null,back}; connect(watch,{create:false}); return;
+  }
+  let r=null; try{r=await fetch('/api/cups/'+slug+'/me',{cache:'no-store'});}catch(e){/* offline */}
+  if(!r) return cupNote('Could not reach the cup. Check your connection and try again.',back);
+  if(r.status===401){location.href='/account/?next='+encodeURIComponent(location.pathname+location.search); return;}
+  const j=r.ok?await r.json():null, tb=j&&j.live&&j.live.table;
+  if(!tb||!tb.token) return cupNote('You have no table in this cup right now.',back);
+  if(tb.done) return cupNote('Your table has finished: you came '+(PLACE[tb.place]||'')+'.',back);
+  net.cup={slug,code:tb.code,token:tb.token,back,fresh:true}; connect(tb.code,{create:false});
+}
+/* Before the deal (and for watchers, before there is anything to show yet). */
+function cupWait(m){
+  if(m){net.cupMeta=m.cup; net.you=m.you; net.seats=m.seats; net.watching=m.watching; net.recvWait=Date.now(); net.waitIn=m.cup.dealIn;}
+  const c=net.cupMeta; if(!c) return;
+  if(c.phase==='done'&&!G) return cupNote('This table has finished.',net.cup.back);
+  if(G) return;                       // the game is on screen: nothing to wait for
+  let html;
+  if(c.watch) html='<h2>Watching a cup table</h2><p class="rules-p">Watchers see the game '+c.delay+' moves behind, and never anyone\'s cards until the table ends. The first moves appear shortly.</p>';
+  else{
+    const left=c.dealIn!=null?Math.max(0,Math.ceil((net.waitIn-(Date.now()-net.recvWait))/1000)):0;
+    const what=c.draw==='GF'?'The Grand Final':c.draw==='L'?'Second Chance table':'Main draw table';
+    html='<h2>Your table</h2><p class="rules-p">'+what+'. '+(c.draw==='GF'?'Grand Final prizes are paid when the cup ends.':'1st gets <b>'+c.pay1+'</b> coins'+(net.seats.length>1?', 2nd gets <b>'+c.pay2+'</b>':'')+'.')+
+      ' The cards are dealt when everyone is here, or in '+left+'s.</p><ul class="res">'+
+      net.seats.map((s,i)=>'<li><div class="res-head"><b>'+esc(s.name)+(s.me?' (you)':'')+'</b><span class="mono">'+(c.here[i]?'here':'not here yet')+'</span></div></li>').join('')+'</ul>';
+  }
+  html+='<div class="sheet-actions"><a class="btn" href="'+esc(net.cup.back)+'">Back to the cup</a></div>';
+  if(ui.sheet==='cupwait'&&ui.waitHTML===html) return;
+  openSheet(html); ui.sheet='cupwait'; ui.waitHTML=html;
+}
+function cupClosed(code,reason){
+  const back=net.cup.back;
+  net.on=false; net.ws=null;
+  if(code===4001){location.href='/account/?next='+encodeURIComponent(location.pathname+location.search); return;}
+  if(code===4003&&net.cup.fresh){net.cup.fresh=false; cupJoin(net.cup.slug); return;}      // a token from before a reload: fetch a new one, once
+  if(G&&G.over) return;              // the result stays on screen
+  cupNote(code===4004||code===4005?'This table has finished.':code===4011?'This cup doesn\'t allow watchers.':code===4010?'This table has as many watchers as it can take.':'You can\'t sit at this table ('+reason+').',back);
+}
+/* The end of a cup table: places, points and this table's pay. */
+function renderCupResult(){
+  const c=net.cupMeta||{}, places=c.places||[], mine=net.you!==null?places.indexOf(net.you):-1;
+  const pay=k=>c.draw==='GF'?0:k===0?c.pay1:k===1?c.pay2:0;
+  const rows=places.map((i,k)=>{
+    const p=G.players[i], open=p.hand.every(x=>x.shape), pts=open?p.hand.reduce((a,x)=>a+x.n,0):null, coins=pay(k);   // a watcher may not be shown the hands
+    return '<li class="'+(k===0?'win':'')+'"><div class="res-head"><span class="badge '+(k<2?'w':'l')+'">'+PLACE[k+1]+'</span><b>'+esc(p.name)+(i===net.you?' (you)':'')+'</b>'+
+      '<span class="mono">'+(c.forfeit&&c.forfeit[i]?'forfeited · ':'')+p.hand.length+' card'+(p.hand.length===1?'':'s')+(pts!==null?' · '+pts+' pts':'')+(coins?' · +'+coins+' coins':'')+'</span></div>'+
+      (p.hand.length&&open?'<div class="minis">'+sortedHand(p.hand).map(x=>cardHTML(x,{cls:'mini'})).join('')+'</div>':'')+'</li>';
+  }).join('');
+  const how=c.how==='clock'?'The table clock ran out, so the fewest points wins.':c.how==='forfeit'?'The others forfeited.':c.how==='stalemate'?'Nobody could move, so the fewest cards wins.':esc(G.players[places[0]].name)+' checked up.';
+  const head=mine===0?'You won the table!':mine>0?'You finished '+PLACE[mine+1]:esc(G.players[places[0]].name)+' wins the table';
+  const paid=mine>=0&&pay(mine)?'<p class="rules-p"><b>'+pay(mine)+' coins</b> are in your wallet.</p>':c.draw==='GF'&&mine>=0?'<p class="rules-p">Grand Final prizes are paid when the cup ends.</p>':'';
+  const html='<h2>'+head+'</h2><p class="rules-p">'+how+'</p>'+paid+'<ul class="res">'+rows+'</ul>'+
+    '<div class="sheet-actions"><a class="btn primary" href="'+esc(net.cup.back)+'">Back to the cup</a></div>';
+  if(ui.sheet==='result'&&!$('#sheet').hidden&&ui.resultHTML===html) return;
+  openSheet(html); ui.sheet='result'; ui.resultHTML=html;
+  $('#sheetClose').hidden=false;
+}
+/* The table clock, on your own seat (the top bar has no room for it on a phone). */
+function cupClock(){
+  const left=net.cupEnd&&G&&!G.over?Math.max(0,Math.ceil((net.cupEnd-Date.now())/1000)):null;
+  return left===null?'Your seat':'<span class="'+(left<=60?'last':'')+'">Table '+Math.floor(left/60)+':'+String(left%60).padStart(2,'0')+'</span>';
+}
+function showSay(){
+  const p=(net.cupMeta&&net.cupMeta.chat)||[];
+  openSheet('<h2>Say to the table</h2><div class="sheet-actions" style="flex-wrap:wrap">'+p.map((t,i)=>'<button class="btn" type="button" data-say="'+i+'">'+esc(t)+'</button>').join('')+'</div>');
+}
 // a read-only hook for tests and debugging
 window.whot={state:()=>({online:net.on,code:net.code,you:net.you,seats:net.seats,phase:ui.phase,busy:ui.busy,current:G&&G.current,turns:G&&G.turns,over:G&&G.over,hand:G&&net.you!==null&&G.players[net.you]?G.players[net.you].hand.map(c=>c.id):null,voice:{peers:voice.peerCount,connected:voice.connected,talking:[...voice.talking.keys()],ptt:!$('#pttBtn').hidden}})};

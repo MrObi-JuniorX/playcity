@@ -1,6 +1,6 @@
 # Whot Cup: product requirements and build plan
 
-Status: draft for review · Owner: Obi · Last updated 2026-10-19
+Status: draft for review · Owner: Obi · Last updated 2026-11-05
 
 The Whot Cup is a scheduled, staked Whot tournament for up to 20,000 players. It launches on free coins and moves to naira only after legal sign-off. Every rule that is still a product choice is a per-cup setting the site admin controls, so the same code runs a 64-player coin pilot and a 16,384-player sponsored cup.
 
@@ -77,7 +77,7 @@ These are the defaults. Every bold term is a setting in section 5.
 5. In Second Chance, only the winner advances when **scWinnerOnly** is on. 2nd is still paid. A second loss ends the cup.
 6. Each draw ends with a final table whose top 2 go to the Grand Final. The GF pays **gfSplit** of the GF pot, which is **gfShare** of each pot after the platform cut.
 7. The platform keeps **platformCut** of every stake.
-8. When the table clock runs out, the remaining players rank by fewest card points, then fewer cards, then seat order from the previous round.
+8. When the table clock runs out, the remaining players rank by fewest card points, then fewer cards, then seat order. When someone checks up, the others rank the same way behind them. A player who forfeited ranks below everyone who stayed. (Seat order is the seat at this table, which comes from the round's published seed.)
 
 ---
 
@@ -185,11 +185,13 @@ Each requirement has an id used by the build plan.
 - **SE-4** Each seat is issued as a signed seat token (HMAC over cup, round, table code, seat, player, expiry). The table accepts a sit only with a valid token for that seat. Nobody can ask for, take or swap a cup seat.
 
 ### 6.5 Cup tables (TB)
-Cup tables reuse `WhotTable` in **cup mode**. The rules engine is unchanged.
+Cup tables are their own Durable Object, `CupTable` (`src/cup/table.ts`), built on the same rules engine and the same message shapes as the free `WhotTable`, so one browser client draws both. The rules engine is unchanged. The table's rules live in a pure core with an injected clock (`src/cup/tablecore.ts`), which is what the leak fuzz plays.
+
+*Changed from the first draft*, which had `WhotTable` grow a cup mode. In a separate class, the free table's seat requests, invite keys, computer-seat takeovers, rematches and `adoptState` don't exist at all, so no setting or bug can switch them on at a cup table. The cost was one binding and one migration (`v4`).
 - **TB-1** The server deals every cup game. `adoptState` (handing over a browser game) is refused in cup mode.
 - **TB-2** Seats are bound by token (SE-4). Seat requests, the invite key and computer-seat takeovers are off.
-- **TB-3** Turn clock `turnClockSec`. On timeout the computer makes one fair move (`aiMoveFair`: it sees only that seat's view). Table clock `tableClockSec`, then the clock ranking rule (section 4).
-- **TB-4** Disconnects: the computer holds the seat for `disconnectGraceSec`, then the player forfeits that table and ranks last.
+- **TB-3** Turn clock `turnClockSec`. On timeout the computer makes one fair move (`aiMoveFair`: it sees only that seat's view). Table clock `tableClockSec`, then the clock ranking rule (section 4). The deal happens when everyone is there, or a minute after seating, whichever comes first. The table clock always ends at least 15 s before the director's backstop.
+- **TB-4** Disconnects: a dropped player's own turn waits 10 s for them, then the computer plays their cards. After `disconnectGraceSec` away, they forfeit that table and rank last. A turn's deadline belongs to the turn, so dropping and reconnecting never buys a fresh clock. With nobody left at the table to play against, the table waits rather than letting the computer play the game out.
 - **TB-5** Result: when the places are decided, the table sends one signed result to the director (places, card points, moves, duration). It then keeps its row only until the reveal window ends, and deletes it.
 - **TB-6** Voice per `voice`. Chat per `chat` (preset phrases only).
 - **TB-7** Spectators get the public view only (counts, discard pile, whose turn), `spectatorDelayMoves` behind. Hands are revealed only after the table ends, and only when `revealHands = after-table`. This changes the player journey doc, which showed a followed player's hand live.
@@ -240,7 +242,7 @@ Browser (PWA) ──HTTP──► Worker /api/*  ──► D1 (players, wallets,
      │                     └─RPC─► CupDirector DO (one per cup: lifecycle, seating, results, settlement)
      │                                    │  RPC fan-out once per slot
      ├──ws──► CupGate DO (sharded by player, 32 shards: "your table is ready", SC offers, live wallet)
-     └──ws──► WhotTable DO (one per cup table, cup mode: seat tokens, delayed spectators)
+     └──ws──► CupTable DO (one per cup table: seat tokens, clocks, delayed spectators)
                      └─RPC result─► CupDirector
 ```
 
@@ -249,7 +251,7 @@ Browser (PWA) ──HTTP──► Worker /api/*  ──► D1 (players, wallets,
 | D1 `playcity` | System of record for money and identity | Queryable, transactional per statement batch, cheap at this volume |
 | `CupDirector` DO (per cup) | Live cup state: the field per draw, slot, table map, frozen schedule | One coordination atom per cup. A round barrier needs one place that knows every table. |
 | `CupGate` DO (per shard) | Players' hub sockets, no storage | Spreads up to 20,000 sockets across 32 objects. Hibernates between pushes. The director sends one RPC per shard per slot, not one per player. |
-| `WhotTable` DO (per table) | One game row while the table runs | Already built and tested. Cup mode adds seat tokens, delayed spectators and result reporting. |
+| `CupTable` DO (per table) | One game row while the table runs | Same engine and messages as the free `WhotTable`, without its seat requests, invites or adoptState. Created by its first connection from the director's own record (`tableSpec`). Reports a signed result, then deletes itself after the reveal window. |
 | Edge cache | Cup page, bracket and leaderboard JSON (5 s) | Thousands of viewers cost one origin read per colo every 5 s |
 
 **Director storage.** One row per registration (player, draw, state, table), written in batches of up to 500 per transaction. One blob per slot (seating and results). No per-move writes ever reach the director.
@@ -311,7 +313,8 @@ The cost protocol's tiers T1–T5 apply to every cup component. New budgets:
 | Director's own rows written per player, whole cup | ≤ 5 (measured 4.21 at 16,384) |
 | D1 rows written per player for payouts and table records | ≤ 10 (measured 7.53 at 16,384) |
 | Gate RPCs per slot | ≤ 32 (one per shard) |
-| Cup table: idle once the result is sent | hibernated, row deleted after the reveal window |
+| Cup table: rows written per move | ≤ 1 (measured: 80 moves, 81 rows, the extra one is the report; an unchanged table writes nothing) |
+| Cup table: idle once the result is sent | hibernated, row and alarm deleted 90 s after the table ends |
 | Public cup JSON origin reads | ≤ 1 per colo per 5 s |
 | Director CPU per slot transition, 16,384 players | ≤ 200 ms (unverified: local wall time, D1 included, was 16.4 s for the round-1 slot in simulate mode; measure on staging, T4) |
 | Sockets per gate shard at 20,000 players | ≤ 700 |
@@ -331,7 +334,7 @@ Rough cost at 1,024 players: about 1,000 tables × worst case $0.0014 = $1.40 of
 | `ledger` | id, idem_key (unique), from_account, to_account, amount, currency, kind, player_id, cup_id, memo, created_at |
 | `cups` | id, slug, state, config_json (frozen), config_hash, schedule_json (frozen at check-in close), created_by |
 | `registrations` | cup_id, player_id, state, seat_draw_rank, checked_in_at, sc_bought_at |
-| `table_results` | cup_id, slot, draw, table_code, places_json, points_json, duration_ms, result_sig |
+| `table_results` | cup_id, slot, draw, table_code, places_json, pay1, pay2, late, reported_at, stats_json (how it ended, moves, duration, points, cards and timeouts per place, forfeits; signed by the table, never a card) |
 | `seeds` | cup_id, slot, commitment, seed (null until revealed) |
 | `flags` | id, cup_id, kind, players, evidence_json, state, reviewer, decision, notes |
 | `audit` | id, actor, action, target, before_json, after_json, at |
@@ -418,18 +421,23 @@ Tick each box as it ships with its tests green. Every phase ends with the cost p
 **Before Phases 4–5 go live:** apply migration `0004_cups_live.sql` remotely. Cups run in simulate mode (`CUP_TABLE_MODE` unset) until Phase 6 tables exist; set `CUP_TABLE_MODE=external` then.
 
 ### Phase 6: Cup tables and table security
-- [ ] `WhotTable` cup mode: server deal only, `adoptState` refused (TB-1), seat tokens (TB-2), asks and invite keys off.
-- [ ] Turn and table clocks with the clock ranking rule (TB-3). Grace then forfeit (TB-4).
-- [ ] Signed result to the director, then the reveal window and deletion (TB-5).
-- [ ] Voice and chat per config (TB-6).
-- [ ] Spectator stream: public view only, delayed by moves, hands only after the table ends (TB-7).
-- [ ] **S-1 leak fuzz:** for 1,000 random cup games, capture every message to every seat, spectator and the director. Assert no card id outside that seat's own hand and the public pile ever appears, and no market order.
-- [ ] **S-2:** spectators never get hidden cards, and are never fewer than `spectatorDelayMoves` behind.
-- [ ] **S-3:** deck order is independent of the published seeds (statistical check over 10,000 deals).
-- [ ] **S-4:** fuzz malformed, oversized, out-of-turn and replayed messages. The table state never changes.
-- [ ] **S-5:** wrong, expired, reused and other-seat tokens are refused.
-- [ ] **S-10:** a disconnect never freezes a table past grace plus one turn.
-- [ ] T2 for cup mode: rows per move ≤ 1, row deleted after the reveal, hibernates between moves.
+- [x] `CupTable` (`src/cup/table.ts`, rules in `src/cup/tablecore.ts`), a separate class rather than a `WhotTable` mode (6.5). The server deals; nothing a browser sends can set up a game, so there is no `adoptState` to refuse (TB-1). Seats need a seat token plus the signed-in player it names (TB-2). The free table's seat requests, invite keys and computer-seat takeovers don't exist here. A table is created only by its first connection, from the director's record (`tableSpec`), which has no seed in it. Route: `/ws/cup/:slug/:code`. A token only works from our own Origin, and identity headers sent by a browser are dropped. A second device takes the seat over and the first one watches (ID-5).
+- [x] Turn clock with one fair computer move on timeout, table clock with the ranking rule, a 10 s hold on a dropped player's turn, then forfeit after the grace (TB-3, TB-4).
+- [x] Signed result with stats to the director (`report(code, places, sig, stats)`, stored in `table_results.stats_json`, migration `0005`). Retried with backoff until it lands or can never land, then the reveal window (90 s) and deletion of the row and the alarm (TB-5).
+- [x] Voice for seated people only when `voice = seated`. Preset phrases only (8 of them, one per player every 2.5 s) when `chat = presets` (TB-6). Watchers can do neither.
+- [x] Watchers: a public view built as each move happens and sent `spectatorDelayMoves` moves later. Nothing is shown until that many moves have been made. Hands appear only at the end, and only with `revealHands = after-table` (TB-7). `spectators = off` refuses watchers. Up to 200 watchers per table; the big Grand Final audience is Phase 8.
+- [x] **S-1 leak fuzz** (`test/cup/table.test.ts`): 1,000 random cup games with 2 to 4 seats, random settings, late arrivals, drops, idle turns and junk moves. Every view of every move, for every seat and the watchers, is checked against the live game it was built from: no card id outside that seat's own hand, the played pile and the cards just played, and no market. Results for the director carry no card. Latest run: 33,718 moves, 88 timeouts, 712 forfeits, every way a table can end, no leaks. The wire is checked too (`test/worker/cuptable.test.ts`).
+- [x] **S-2:** watchers never get a hand or the market while the table runs, are never fewer than `spectatorDelayMoves` moves behind, and never go backwards (in the fuzz, and on the wire).
+- [x] **S-3:** a table is never told a seed. 200 identical tables deal 200 different decks, and 10,000 deals show no dependence between the round's seed and four card positions (chi-squared, p < 0.0001).
+- [x] **S-4:** malformed, oversized, out-of-turn, replayed, other-seat and free-table messages (`create`, `sit`, `again`, `answer`…) are refused. The stored row is byte-for-byte the same and nothing is written. In the fuzz, 33,555 junk moves changed nothing.
+- [x] **S-5:** wrong, expired, other-seat, other-player, other-table and other-round tokens are refused. So are no session, a forged identity header, a missing or foreign Origin, an unknown cup and a code the cup never seated (nothing is stored for it).
+- [x] **S-10:** across the fuzz, the longest wait for a move or the end never passed grace plus one turn (the worst case was 24 s inside the bound). Reconnecting never buys a fresh turn clock (T11). With nobody at the table, the computer doesn't play the game out.
+- [x] T2: one row per move (measured 80 moves, 81 rows; the extra one is the report). An unchanged table writes nothing, so a watcher arriving costs no row. The table's memory was wiped before every one of the 80 moves and the game carried on from its row each time. The row and the alarm are gone after the reveal window, and a closed table can't be reopened.
+- [x] A whole 16-player cup in external mode played on real tables by bots over WebSockets: every table's own ranking is what the director paid on, no table late, the pot empty and the books clean.
+- [x] Browser client: `/whot/?cup=<slug>` opens your table (the token comes from `/me`, never the URL), and `&watch=<code>` watches one. It has a waiting sheet with who's here and the deal countdown, the table clock on your own seat, away and forfeited labels, a Say button for the presets and a result sheet with this table's pay. The cup page's "your table is ready" card links to the table. Checked in headless Chrome against `wrangler dev`, phone and desktop.
+- [ ] Still open from Phase 5: `gfEdge: seat-choice` (finalists pick their seat). Publishing a cup with it set should be refused until it is built.
+
+**Before Phase 6 goes live:** apply migration `0005_table_stats.sql` remotely. Deploy (adds `CupTable`, migration `v4`). Set `CUP_TABLE_MODE=external` (a `vars` entry), so newly published cups play on real tables. Simulate mode stays for rehearsals and the cost tests.
 
 ### Phase 7: Player experience
 - [ ] `CupGate` DO (32 shards, storage-free, hibernating) and `/ws/cup/:id`.
