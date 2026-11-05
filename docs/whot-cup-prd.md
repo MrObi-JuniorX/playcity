@@ -207,7 +207,7 @@ Cup tables are their own Durable Object, `CupTable` (`src/cup/table.ts`), built 
 ### 6.7 Player experience (PX)
 Screens and copy follow the player journey doc. Requirements that shape the build:
 - **PX-1** Cup page: countdown, seat counter, entry, prize ladder (estimated, then exact), schedule in local time, friends who entered, verifiable seeds once published.
-- **PX-2** Hub between rounds: My cup, Bracket, Leaderboards (this cup, friends, cities, season), Watch.
+- **PX-2** Hub between rounds: My cup, Bracket, Leaderboards (this cup, friends), Watch. *Cities and season boards were dropped for now (2026-11-05): players have no city, and no season is defined.*
 - **PX-3** Result cards for every outcome, always showing this table's pay and the cup net. A net loss is never called a win.
 - **PX-4** Notifications: Web Push (PWA) for "check-in open", "your table is ready", "Second Chance offer" and "Grand Final live". SMS only for check-in, and only when the player opted in.
 - **PX-5** Share cards rendered on demand: entered, round reached, champion. Each carries a link to the cup or the next cup.
@@ -312,7 +312,7 @@ The cost protocol's tiers T1–T5 apply to every cup component. New budgets:
 | Rows written per player per cup, D1 + all DOs | ≤ 40 (6 per ledger entry: stake, Second Chance and 2–4 table pays; about $0.00004) |
 | Director's own rows written per player, whole cup | ≤ 5 (measured 4.21 at 16,384) |
 | D1 rows written per player for payouts and table records | ≤ 10 (measured 7.53 at 16,384) |
-| Gate RPCs per slot | ≤ 32 (one per shard) |
+| Gate RPCs per slot | ≤ 32 (one per shard); a table's result reaches only its players' gates (≤ 4) |
 | Cup table: rows written per move | ≤ 1 (measured: 80 moves, 81 rows, the extra one is the report; an unchanged table writes nothing) |
 | Cup table: idle once the result is sent | hibernated, row and alarm deleted 90 s after the table ends |
 | Public cup JSON origin reads | ≤ 1 per colo per 5 s |
@@ -333,9 +333,11 @@ Rough cost at 1,024 players: about 1,000 tables × worst case $0.0014 = $1.40 of
 | `accounts` | id, kind (player, platform, issuer, cup, sponsor), owner, currency, balance (CHECK ≥ 0 except the issuer), last_topup_day |
 | `ledger` | id, idem_key (unique), from_account, to_account, amount, currency, kind, player_id, cup_id, memo, created_at |
 | `cups` | id, slug, state, config_json (frozen), config_hash, schedule_json (frozen at check-in close), created_by |
-| `registrations` | cup_id, player_id, state, seat_draw_rank, checked_in_at, sc_bought_at |
+| `registrations` | cup_id, player_id, state, seat_draw_rank, checked_in_at, sc_bought_at, invited_by (indexed both ways for the friends board: one extra index row per entry, two when invited) |
 | `table_results` | cup_id, slot, draw, table_code, places_json, pay1, pay2, late, reported_at, stats_json (how it ended, moves, duration, points, cards and timeouts per place, forfeits; signed by the table, never a card) |
 | `seeds` | cup_id, slot, commitment, seed (null until revealed) |
+| `push_subs` | id (SHA-256 of the endpoint), player_id, endpoint, p256dh, auth, created_at |
+| `sms_spend` | day, kind, n: texts that aren't sign-in codes, so one daily SMS cap covers all spend |
 | `flags` | id, cup_id, kind, players, evidence_json, state, reviewer, decision, notes |
 | `audit` | id, actor, action, target, before_json, after_json, at |
 
@@ -440,14 +442,16 @@ Tick each box as it ships with its tests green. Every phase ends with the cost p
 **Before Phase 6 goes live:** apply migration `0005_table_stats.sql` remotely. Deploy (adds `CupTable`, migration `v4`). Set `CUP_TABLE_MODE=external` (a `vars` entry), so newly published cups play on real tables. Simulate mode stays for rehearsals and the cost tests.
 
 ### Phase 7: Player experience
-- [ ] `CupGate` DO (32 shards, storage-free, hibernating) and `/ws/cup/:id`.
-- [ ] Hub screens: My cup, Bracket, Leaderboards, Watch (PX-2).
-- [ ] Result cards for every outcome, with the net always shown (PX-3).
-- [ ] Second Chance offer screen with the countdown and pay-from-winnings.
-- [ ] Web Push via the existing service worker. SMS opt-in for check-in only (PX-4).
-- [ ] Share cards rendered at the edge (PX-5).
-- [ ] Accessibility pass (PX-6).
-- [ ] Tests: a player who closes the app gets the table push; a takeover by a second device works; leaderboards match the ledger.
+- [x] `CupGate` (`src/cup/gate.ts`): 32 storage-free, hibernating shards per cup at `/ws/cup/:slug/hub` (signed in, own Origin). A player always lands on the same shard (FNV-1a of the id). A second device takes over; the first is told and closed (ID-5). The director gathers what players need to hear during a tick and sends it once, one call per gate: "your table is ready" with the seat token, each table's result and any Second Chance offer, the cup's state and progress, check-in opening, the Grand Final going live. T2 holds it to ≤ 32 gate calls per tick at 4,096 players; a table's result in external mode reaches only its players' gates.
+- [x] Hub screens on the cup page (PX-2): My cup (your tables with place and pay, the net, notifications, share), Bracket (every round by draw, then the finals with names), Leaderboard (this cup by coins won, and friends: anyone linked to you by an invite, either way), Watch (tables in play, biggest stakes first). "Friends who entered" now shows under the seat counter (PX-1). With the hub open the page updates when the gate says so, and polls only once a minute as a fallback. Public views carry names, never ids, and are edge-cached for 5 s.
+- [x] Result cards for every outcome, with the cup's net always shown (PX-3): at the table (after the places and this table's pay) and on the cup page. "You won your table" never claims a cup win: the net sits right under it. `/me` now reports winnings live from the ledger (`registrations.won` is only written at settlement).
+- [x] Second Chance offer at the table, the moment it ends: the countdown, the stake, where it's paid from (`scPayFromWinnings`), and the buy button.
+- [x] Web Push (`src/push/`): VAPID (RFC 8292) and aes128gcm payload encryption (RFC 8291) in Web Crypto, checked against the RFC's test vector and decrypted by an independent implementation (`http_ece`). Players without the hub open get pushes from their gate, after it has answered the director. Subscriptions are accepted only for the browsers' own push services, and dead ones (404/410) are deleted. SMS for check-in only, only for players who opted in, and only when no push reached them. Those texts count against the same daily SMS spend cap as sign-in codes (`sms_spend`).
+- [x] Share cards (PX-5): rendered at the edge as SVG (`/api/cups/:slug/card/:player`), from the player's own record: "I'm in", "Reached round N", "Nth in the Grand Final", "Champion!". The phone turns the card into a PNG and shares it as an image. The link (`/s/:slug/:player`) opens the cup with the player as the inviter, which is what builds the friends board. *Link previews show text and the app icon, not the card: WhatsApp and X don't preview SVG, and rendering PNGs in the Worker would need a 2.5 MB library.*
+- [x] Accessibility (PX-6): axe-core (WCAG 2 A and AA) finds no violations on the cup page or on a cup table's result. Results, Second Chance offers and the last minute of the table clock are announced to screen readers. The tabs work with arrow keys. Every timer is text. The existing reduced-motion handling covers the new screens.
+- [x] Tests (`test/worker/hub.test.ts`, `test/game/push.test.mjs`): every seated player hears their table with a token that works, then their result and offer, in one call per gate. A player who closed the app gets the table as a Web Push, sealed so the push service can't read it, and a dead subscription is deleted. A second device takes the hub over. Check-in texts reach only opted-in players no push reached. The bracket matches the director's tables, and the leaderboard, friends and your tables match the ledger to the coin. Share cards say how the player did and escape what they typed. Checked in headless Chrome against `wrangler dev`.
+
+**Before Phase 7 goes live:** apply migration `0006_notifications.sql` remotely. Run `npm run vapid` once and store the three values with `wrangler secret put` (keep the pair for good: a new pair makes every subscription stale). Check-in texts also need the SMS provider (section 13, question 1).
 
 ### Phase 8: Spectating, cheers and the Grand Final show
 - [ ] Watch list sorted by stakes, friends pinned (SP-1).

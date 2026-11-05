@@ -66,6 +66,21 @@ td.n,th.n{text-align:right}
 details summary{cursor:pointer; font-weight:600}
 .offer{border:1px solid var(--second); background:rgba(34,160,148,.12)}
 .ring{font:800 1.6rem var(--font-display); font-variant-numeric:tabular-nums; color:var(--second)}
+.tabs{display:flex; gap:6px; overflow-x:auto; padding-bottom:2px}
+.tab{font:700 .95rem var(--font-body); border-radius:999px; padding:9px 16px; border:1px solid var(--line); background:transparent; color:var(--ink); cursor:pointer; white-space:nowrap}
+.tab[aria-selected="true"]{background:var(--accent); border-color:var(--accent); color:var(--accent-ink)}
+.tab:focus-visible{outline:3px solid var(--accent); outline-offset:2px}
+.seg{display:inline-flex; border:1px solid var(--line); border-radius:10px; overflow:hidden}
+.seg button{font:600 .9rem var(--font-body); padding:7px 14px; border:0; background:transparent; color:var(--muted); cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--field); color:var(--ink)}
+.list{margin:0; padding:0; list-style:none; display:grid; gap:8px}
+.list li{display:flex; justify-content:space-between; gap:12px; align-items:center; padding:10px 12px; border:1px solid var(--line); border-radius:12px; background:var(--field)}
+.list li.me{border-color:var(--accent)}
+.list .who{display:grid; gap:2px; min-width:0}
+.list .who b{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.pill{font:500 .72rem var(--font-mono); letter-spacing:.06em; text-transform:uppercase; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--muted)}
+.pill.w{color:var(--good); border-color:rgba(127,214,154,.4)} .pill.l{color:var(--second); border-color:rgba(34,160,148,.5)} .pill.gf{color:var(--accent); border-color:rgba(255,194,71,.5)}
+.check{display:flex; gap:10px; align-items:flex-start} .check input{width:20px; height:20px; margin-top:2px}
 [hidden]{display:none!important}
 @media (prefers-reduced-motion:no-preference){.bar i{transition:width .6s ease}}
 </style>
@@ -83,6 +98,7 @@ details summary{cursor:pointer; font-weight:600}
     <p class="muted" id="sponsor" hidden style="margin:0"></p>
     <p class="count" id="count" style="margin:0"></p>
     <div class="seats" id="seats"><div class="bar"><i id="seatBar"></i></div><span class="muted" id="seatText"></span></div>
+    <p class="muted" id="friendsLine" hidden style="margin:0"></p>
     <div class="tiles">
       <div class="tile"><b id="tFee"></b><span>to enter</span></div>
       <div class="tile"><b id="tChamp"></b><span id="tChampL">champion takes home</span></div>
@@ -91,6 +107,14 @@ details summary{cursor:pointer; font-weight:600}
   </section>
 
   <section class="card act" id="action" hidden aria-live="polite"></section>
+
+  <nav class="tabs" id="tabs" role="tablist" aria-label="Cup" hidden>
+    <button class="tab" role="tab" id="tab-me" aria-controls="panel" data-tab="me">My cup</button>
+    <button class="tab" role="tab" id="tab-bracket" aria-controls="panel" data-tab="bracket">Bracket</button>
+    <button class="tab" role="tab" id="tab-leaders" aria-controls="panel" data-tab="leaders">Leaderboard</button>
+    <button class="tab" role="tab" id="tab-watch" aria-controls="panel" data-tab="watch">Watch</button>
+  </nav>
+  <section class="card" id="panel" role="tabpanel" hidden></section>
 
   <section class="card" id="howCard" hidden>
     <h2>How it works</h2>
@@ -125,6 +149,7 @@ details summary{cursor:pointer; font-weight:600}
   const lagos = (ms) => new Date(ms).toLocaleTimeString([], { timeZone: 'Africa/Lagos', hour: 'numeric', minute: '2-digit' });
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   let cup = null, data = null, me = null, signedIn = false, timer = 0;
+  let tab = null, board = 'cup', hub = null, hubUp = false, hubTries = 0, polls = 0;
 
   const ERR = {
     'signed-out': 'Sign in to enter.', 'profile-incomplete': 'Finish your profile first: a name, an avatar and the 18+ check.',
@@ -206,7 +231,12 @@ details summary{cursor:pointer; font-weight:600}
       return `<div class="card offer"><h2>Second Chance: ${n(l.offer.fee)} coins</h2><p class="muted" style="margin:0">Play first-time losers like you. Win your table to stay in, and 2nd still gets paid. Reach the Second Chance final and you're in the Grand Final.</p><div class="row"><span class="ring">${left}s</span><button class="btn second" id="scBtn">Buy back in for ${n(l.offer.fee)}</button></div><p class="msg" id="m"></p></div>${strip(e)}`;
     }
     if (l.table && !l.table.done) return `<h2>Round ${l.slot}: your table is ready</h2><p class="muted" style="margin:0">${l.table.draw === 'L' ? 'Second Chance table.' : l.table.draw === 'GF' ? 'The Grand Final.' : 'Main draw table.'} 1st gets ${n(l.table.pay1)}, 2nd gets ${n(l.table.pay2)}. Table ${esc(l.table.code)}, seat ${l.table.seat + 1}.</p>${l.mode === 'external' ? `<a class="btn primary" href="/whot/?cup=${encodeURIComponent(cup.slug)}">Go to your table</a><p class="muted" style="margin:0;font-size:.9rem">The cards are dealt when everyone is there, or a minute after the round is seated. Not there? The computer plays your cards, and after a short while you forfeit the table.</p>` : `<p class="muted" style="margin:0;font-size:.9rem">This is a rehearsal cup: rounds are decided by the computer.</p>`}${strip(e)}`;
-    if (l.table?.done) return `<h2>${l.table.place === 1 ? 'You won your table!' : l.table.place === 2 ? 'Through!' : 'Table finished'}</h2><p class="muted" style="margin:0">You finished ${['', '1st', '2nd', '3rd', '4th'][l.table.place] || ''}. ${l.paused ? 'The cup is paused.' : 'The next round starts after the break.'}</p>${strip(e)}`;
+    if (l.table?.done) {
+      const out = !!l.finish, gf = l.table.draw === 'GF';
+      const head = l.table.place === 1 ? 'You won your table!' : `You finished ${['', '1st', '2nd', '3rd', '4th'][l.table.place] || ''} at your table`;
+      const next = gf ? 'Grand Final prizes are paid when the cup ends.' : out ? 'Your cup is over.' : l.paused ? "You're through. The cup is paused." : "You're through. The next round starts after the break.";
+      return `<h2>${head}</h2><p class="muted" style="margin:0">${next}</p>${strip(e)}`;
+    }
     return `<h2>Waiting for the next round</h2>${strip(e)}`;
   }
   const finishText = (f) => f === 'champion' ? 'You won the Grand Final.' : /^grand-final/.test(f || '') ? `You finished ${f.split('-').pop()}${['', 'st', 'nd', 'rd', 'th'][Number(f.split('-').pop())] || 'th'} in the Grand Final.` : /^main-r/.test(f || '') ? `You went out in main-draw round ${f.slice(6)}.` : 'You went out in Second Chance.';
@@ -262,9 +292,197 @@ details summary{cursor:pointer; font-weight:600}
     if (!d.ok) { $('missing').hidden = false; return; }
     data = d.j; cup = d.j.cup; signedIn = m.status !== 401; me = m.ok ? m.j : null;
     drawHero(); drawInfo(); await drawAction();
+    drawTabs(); friendsLine(); openHub();
   }
+
+  /* ---------- the hub (Phase 7): tabs, the live line, notifications ---------- */
+  const live = () => ['running', 'settled'].includes(cup.state);
+  const entered = () => !!me?.entry && !['refunded', 'no-show'].includes(me.entry.state);
+  const PLACE = ['', '1st', '2nd', '3rd', '4th'];
+  const drawName = (d) => d === 'W' ? 'Main draw' : d === 'L' ? 'Second Chance' : 'Grand Final';
+  const pill = (d) => `<span class="pill ${d === 'W' ? 'w' : d === 'L' ? 'l' : 'gf'}">${esc(drawName(d))}</span>`;
+
+  function drawTabs() {
+    const show = { me: entered(), bracket: live(), leaders: live() || signedIn, watch: cup.state === 'running' };
+    const any = Object.values(show).some(Boolean);
+    $('tabs').hidden = !any; $('panel').hidden = !any;
+    if (!any) return;
+    for (const b of document.querySelectorAll('.tab')) b.hidden = !show[b.dataset.tab];
+    if (!tab || !show[tab]) tab = Object.keys(show).find((k) => show[k]);
+    for (const b of document.querySelectorAll('.tab')) { const on = b.dataset.tab === tab; b.setAttribute('aria-selected', on); b.tabIndex = on ? 0 : -1; }
+    $('panel').setAttribute('aria-labelledby', 'tab-' + tab);
+    drawPanel();
+  }
+  async function drawPanel() {
+    const want = tab, p = $('panel');
+    let h = '';
+    if (tab === 'me') h = await mePanel();
+    else if (tab === 'bracket') h = await bracketPanel();
+    else if (tab === 'leaders') h = await leadersPanel();
+    else if (tab === 'watch') h = await watchPanel();
+    if (want !== tab) return;                     // switched tabs while this loaded
+    p.innerHTML = h;
+    wirePanel();
+  }
+
+  async function mePanel() {
+    const hist = me?.history || [];
+    const rows = hist.length ? `<div class="scroll"><table><thead><tr><th>Round</th><th>Table</th><th class="n">Place</th><th class="n">Paid</th></tr></thead><tbody>${hist.map((x) => `<tr><td>${x.draw === 'GF' ? 'Grand Final' : 'Round ' + x.slot}</td><td>${pill(x.draw)}</td><td class="n">${PLACE[x.place] || x.place} of ${x.of}</td><td class="n">${x.draw === 'GF' ? '–' : n(x.pay)}</td></tr>`).join('')}</tbody></table></div>`
+      : `<p class="muted" style="margin:0">Your tables show here as you play them.</p>`;
+    return `<h2>My cup</h2>${strip(me.entry)}${rows}<h2 style="margin-top:6px">Don't miss your table</h2><div id="notify"><p class="muted" style="margin:0">Checking this device…</p></div>
+      <h2 style="margin-top:6px">Share</h2><div id="shareBox"></div>`;
+  }
+  async function bracketPanel() {
+    const r = await api('GET', `/api/cups/${cup.slug}/bracket`), b = r.j.bracket;
+    if (!b) return `<h2>Bracket</h2><p class="muted" style="margin:0">The bracket appears when round 1 is seated.</p>`;
+    const slots = [...new Set(b.rounds.map((x) => x.slot))];
+    const row = (s) => { const at = (d) => b.rounds.find((x) => x.slot === s && x.draw === d); const w = at('W'), l = at('L'), g = at('GF');
+      if (g) return `<tr><td>Grand Final</td><td colspan="2">${g.players} players</td><td class="n">${g.finished ? 'done' : 'live'}</td></tr>`;
+      const cell = (x) => x ? `${n(x.players)} at ${n(x.tables)} table${x.tables === 1 ? '' : 's'}${x.final ? ' (final)' : ''}` : '<span class="muted">–</span>';
+      return `<tr><td>Round ${s}</td><td>${cell(w)}</td><td>${cell(l)}</td><td class="n">${(w?.finished ?? 0) + (l?.finished ?? 0)} / ${(w?.tables ?? 0) + (l?.tables ?? 0)}</td></tr>`; };
+    const finals = b.finals.map((f) => `<li><div class="who"><b>${f.draw === 'GF' ? 'Grand Final' : drawName(f.draw) + ' final'}</b><span class="muted">${esc((f.result || f.players).map((x, i) => f.result ? `${PLACE[i + 1]} ${x}` : x).join(' · '))}</span></div>${f.result ? '' : `<a class="btn" href="/whot/?cup=${encodeURIComponent(cup.slug)}&watch=${encodeURIComponent(f.code)}">Watch</a>`}</li>`).join('');
+    return `<h2>Bracket</h2><p class="muted" style="margin:0">${n(b.field)} players started.</p><div class="scroll"><table><thead><tr><th>Round</th><th>Main draw</th><th>Second Chance</th><th class="n">Tables done</th></tr></thead><tbody>${slots.map(row).join('')}</tbody></table></div>${finals ? `<h2 style="margin-top:6px">Finals</h2><ul class="list">${finals}</ul>` : ''}`;
+  }
+  async function leadersPanel() {
+    const seg = `<div class="seg" role="group" aria-label="Which leaderboard">${live() ? `<button data-board="cup" aria-pressed="${board === 'cup'}">This cup</button>` : ''}${signedIn ? `<button data-board="friends" aria-pressed="${board === 'friends'}">Friends</button>` : ''}</div>`;
+    if (!live()) board = 'friends';
+    if (board === 'friends') {
+      const r = await api('GET', `/api/cups/${cup.slug}/friends`), f = r.j.friends || [];
+      const rows = f.map((x) => `<li class="${x.me ? 'me' : ''}"><div class="who"><b>${esc(x.name)}${x.me ? ' (you)' : ''}</b><span class="muted">${x.entered ? (x.finish ? esc(finishShort(x.finish)) : 'In the cup') : 'Not entered'}</span></div><b>${x.entered ? n(x.won) : ''}</b></li>`).join('');
+      return `<h2>Leaderboard</h2>${seg}<ul class="list">${rows}</ul>${f.length <= 1 ? `<p class="muted" style="margin:0">Friends are players you invited, or who invited you. Share your link from My cup.</p>` : ''}`;
+    }
+    const r = await api('GET', `/api/cups/${cup.slug}/leaderboard`), l = r.j.leaders || [];
+    const rows = l.map((x) => `<li><div class="who"><b>${x.rank}. ${esc(x.name)}</b><span class="muted">${x.finish ? esc(finishShort(x.finish)) : 'Still playing'}</span></div><b>${n(x.won)}</b></li>`).join('');
+    return `<h2>Leaderboard</h2>${seg}${rows ? `<ul class="list">${rows}</ul>` : '<p class="muted" style="margin:0">Nobody has been paid yet.</p>'}<p class="muted" style="margin:0;font-size:.9rem">Coins won at tables and in the Grand Final.</p>`;
+  }
+  const finishShort = (f) => f === 'champion' ? 'Champion' : /^grand-final-(\d)/.test(f) ? `${PLACE[+f.slice(-1)]} in the Grand Final` : /^main-r/.test(f) ? `Out in round ${f.slice(6)}` : 'Out in Second Chance';
+  async function watchPanel() {
+    const r = await api('GET', `/api/cups/${cup.slug}/tables`), t = r.j.tables || [];
+    const rows = t.filter((x) => !x.done).map((x) => `<li><div class="who"><b>${esc(x.players.join(' · '))}</b><span class="muted">${pill(x.draw)} ${x.final ? 'Final · ' : ''}${x.draw === 'GF' ? 'Prizes when the cup ends' : `1st gets ${n(x.pay1)}`}</span></div><a class="btn" href="/whot/?cup=${encodeURIComponent(cup.slug)}&watch=${encodeURIComponent(x.code)}">Watch</a></li>`).join('');
+    return `<h2>Watch</h2><p class="muted" style="margin:0">Tables in play, biggest stakes first. Watchers see each game a few moves behind, and never anyone's cards.</p>${rows ? `<ul class="list">${rows}</ul>` : '<p class="muted" style="margin:0">No tables are in play right now. The next round starts after the break.</p>'}`;
+  }
+
+  function wirePanel() {
+    for (const b of document.querySelectorAll('[data-board]')) b.onclick = () => { board = b.dataset.board; drawPanel(); };
+    if (tab === 'me') { drawNotify(); drawShare(); }
+  }
+
+  /* Share cards (PX-5): rendered at the edge as SVG, turned into a PNG here, and shared as an image with a link
+     that makes the friend who joins through it show up on your friends leaderboard. */
+  let myId = null;
+  async function drawShare() {
+    const box = $('shareBox'); if (!box) return;
+    myId ??= (await api('GET', '/api/me')).j.player?.id;
+    if (!myId) { box.innerHTML = ''; return; }
+    box.innerHTML = `<img src="/api/cups/${encodeURIComponent(cup.slug)}/card/${myId}" width="1200" height="630" alt="Your share card for ${esc(cup.name)}" style="width:100%;height:auto;border-radius:12px;border:1px solid var(--line)">
+      <div class="row"><button class="btn primary" id="shareBtn">Share</button><span class="msg" id="sm"></span></div>`;
+    $('shareBtn').onclick = share;
+  }
+  async function share() {
+    const url = `${location.origin}/s/${cup.slug}/${myId}`, text = `${cup.name} on playcity`;
+    let file = null;
+    try {
+      const svg = await (await fetch(`/api/cups/${cup.slug}/card/${myId}`)).text();
+      const img = new Image(); img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg); await img.decode();
+      const cv = document.createElement('canvas'); cv.width = 1200; cv.height = 630; cv.getContext('2d').drawImage(img, 0, 0);
+      const blob = await new Promise((r) => cv.toBlob(r, 'image/png'));
+      if (blob) file = new File([blob], 'whot-cup.png', { type: 'image/png' });
+    } catch { /* share the link alone */ }
+    const done = (m) => { $('sm').textContent = m; $('sm').className = 'msg good'; };
+    try {
+      if (file && navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], title: text, text: `${text} ${url}` }); return; }
+      if (navigator.share) { await navigator.share({ title: text, text, url }); return; }
+    } catch (e) { if (e?.name === 'AbortError') return; }
+    try { await navigator.clipboard.writeText(url); done('Link copied.'); } catch { done(url); }
+  }
+  document.addEventListener('click', async (e) => {
+    const b = e.target.closest('.tab'); if (!b) return;
+    tab = b.dataset.tab;
+    if (tab === 'me') { const m = await api('GET', `/api/cups/${encodeURIComponent(slug)}/me`); if (m.ok) me = m.j; }   // your stake may have changed elsewhere (a Second Chance bought at the table)
+    drawTabs(); b.focus();
+  });
+  $('tabs').addEventListener('keydown', (e) => {                       // arrow keys move between tabs
+    if (!['ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+    const vis = [...document.querySelectorAll('.tab')].filter((b) => !b.hidden), i = vis.findIndex((b) => b.dataset.tab === tab);
+    const next = vis[(i + (e.key === 'ArrowRight' ? 1 : vis.length - 1)) % vis.length];
+    if (next) { tab = next.dataset.tab; drawTabs(); next.focus(); }
+  });
+
+  async function friendsLine() {
+    const el = $('friendsLine');
+    if (!signedIn || ['settled', 'cancelled'].includes(cup.state)) { el.hidden = true; return; }
+    const r = await api('GET', `/api/cups/${cup.slug}/friends`), k = (r.j.friends || []).filter((f) => f.entered && !f.me);
+    el.hidden = !k.length;
+    el.textContent = k.length ? `${k.length === 1 ? k[0].name + ' has' : k.slice(0, 2).map((f) => f.name).join(', ') + (k.length > 2 ? ` and ${k.length - 2} more` : '') + ' have'} entered.` : '';
+  }
+
+  /* Notifications (PX-4): this device's Web Push, and a text when check-in opens. */
+  const urlKey = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
+  async function drawNotify() {
+    const box = $('notify'); if (!box) return;
+    let push = '';
+    const can = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+    const key = can ? (await api('GET', '/api/push/key')).j.key : null;
+    if (!can) push = `<p class="muted" style="margin:0">This browser can't show notifications. On an iPhone, add playcity to your Home Screen, then open it from there.</p>`;
+    else if (!key) push = '';
+    else {
+      const reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => null);
+      const sub = reg && await reg.pushManager.getSubscription().catch(() => null);
+      push = Notification.permission === 'denied' ? `<p class="muted" style="margin:0">Notifications are blocked for this site in your browser settings.</p>`
+        : sub ? `<div class="row"><span class="msg good">Notifications are on for this device.</span><button class="btn" id="pushOff">Turn off</button></div>`
+        : `<div class="row"><button class="btn primary" id="pushOn">Turn on notifications</button></div><p class="muted" style="margin:0;font-size:.9rem">We'll tell you when your table is ready, when a Second Chance is on offer, and when the Grand Final starts.</p>`;
+    }
+    const pre = !['running', 'settled', 'cancelled'].includes(cup.state);
+    const p = pre ? (await api('GET', '/api/me')).j.player : null;
+    const sms = p ? `<label class="check"><input type="checkbox" id="smsIn" ${p.smsCheckin ? 'checked' : ''}><span>Text me when check-in opens. <span class="muted">Only that one message, and only if a notification doesn't reach you.</span></span></label>` : '';
+    box.innerHTML = push + sms + '<p class="msg" id="nm"></p>';
+    $('pushOn')?.addEventListener('click', async () => {
+      $('pushOn').disabled = true;
+      try {
+        if (await Notification.requestPermission() !== 'granted') throw new Error('denied');
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlKey(key) });
+        const r = await api('POST', '/api/push/subscribe', sub.toJSON());
+        if (!r.ok) throw new Error(r.j.error);
+      } catch (e) { $('nm').textContent = "Couldn't turn notifications on here."; $('nm').className = 'msg bad'; }
+      drawNotify();
+    });
+    $('pushOff')?.addEventListener('click', async () => {
+      const reg = await navigator.serviceWorker.ready, sub = await reg.pushManager.getSubscription();
+      if (sub) { await api('DELETE', '/api/push/subscribe', { endpoint: sub.endpoint }); await sub.unsubscribe(); }
+      drawNotify();
+    });
+    $('smsIn')?.addEventListener('change', async (e) => {
+      const r = await api('PATCH', '/api/me', { smsCheckin: e.target.checked });
+      $('nm').textContent = r.ok ? (e.target.checked ? "We'll text you when check-in opens." : 'No text, then.') : 'Something went wrong. Please try again.';
+      $('nm').className = r.ok ? 'msg good' : 'msg bad';
+    });
+  }
+
+  /* The live line: one socket to this player's gate. Anything it says, the page fetches fresh. */
+  function openHub() {
+    if (hub || !signedIn || !entered() || !['closed', 'check-in', 'running'].includes(cup.state)) return;
+    const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + `/ws/cup/${cup.slug}/hub`);
+    hub = ws;
+    let ping = 0;
+    ws.onopen = () => { hubUp = true; hubTries = 0; ping = setInterval(() => ws.readyState === 1 && ws.send('ping'), 25000); };
+    ws.onmessage = (e) => {
+      if (e.data === 'pong') return;
+      let m; try { m = JSON.parse(e.data); } catch { return; }
+      if (['table', 'result', 'checkin', 'cup', 'gf'].includes(m.t)) soon();
+      else if (m.t === 'live' && tab !== 'me') soon();
+    };
+    ws.onclose = (e) => {
+      clearInterval(ping); hubUp = false; hub = null;
+      if (e.code === 4012 || document.hidden) return;                 // open somewhere else, or we come back on focus
+      setTimeout(() => cup && openHub(), Math.min(30000, 1000 * 2 ** hubTries++));
+    };
+  }
+  let soonT = 0;
+  const soon = () => { clearTimeout(soonT); soonT = setTimeout(load, 250); };
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && cup) { if (!hub) openHub(); load(); } });
   if (!/^[a-z0-9-]{3,48}$/.test(slug)) { $('loading').hidden = true; $('missing').hidden = false; }
-  else { load(); setInterval(() => { if (!document.hidden && cup && ['check-in', 'running', 'registration'].includes(cup.state)) load(); }, 15000); }
+  else { load(); setInterval(() => { if (!document.hidden && cup && ['check-in', 'running', 'registration'].includes(cup.state) && (!hubUp || ++polls % 4 === 0)) load(); }, 15000); }   // the hub pushes changes; polling is the fallback
 })();
 </script>
 </body>

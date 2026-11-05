@@ -11,6 +11,7 @@ import { consoleRoute } from "./console/routes";
 import { consoleCleanup } from "./console/access";
 import { cupRoute, cupTableRoute, cupHubRoute } from "./cup/routes";
 import { pushRoute } from "./push/routes";
+import { sharePage } from "./cup/share";
 
 /* playcity edge Worker. Static game files are served by Workers Static Assets before this code runs.
    GET /api/ice            STUN (and TURN, when configured) servers for WebRTC
@@ -23,6 +24,7 @@ import { pushRoute } from "./push/routes";
    GET /ws/cup/:slug/:code a cup table: ?token= to play your seat (signed in), or no token to watch, delayed
    GET /ws/cup/:slug/hub   a signed-in player's live line to their cup (src/cup/gate.ts)
    /api/push/*             Web Push: the public key, subscribe and unsubscribe (src/push/routes.ts)
+   GET /s/:slug/:player    a share link: a preview of how the player did, then the cup with them as the inviter
    /api/auth/*, /api/me    phone sign-in, sessions and the profile (src/auth/routes.ts)
    GET /api/wallet         the signed-in player's coins and history (src/wallet/routes.ts)
    /api/console/*          the admin console: passkeys, cups, templates, economy, audit, staff (src/console/routes.ts)
@@ -76,6 +78,8 @@ export default {
         if (!CODE.test(code)) return new Response("Bad table code", { status: 400 });
         return await env.WHOT.getByName(code).fetch(request);
       }
+      const share = path.match(/^\/s\/([a-z0-9-]{3,48})\/([0-9a-f-]{36})$/);
+      if (share) return await sharePage(env, request, share[1], share[2]);
       const hub = path.match(/^\/ws\/cup\/([a-z0-9-]{3,48})\/hub$/);
       if (hub) return await cupHubRoute(request, env, hub[1]);
       const cupTable = path.match(/^\/ws\/cup\/([a-z0-9-]{3,48})\/([A-HJ-NP-Z2-9]{10})$/);

@@ -183,3 +183,96 @@ describe("the push and opt-in APIs", () => {
     expect((await call("PATCH", "/api/me", { cookie, body: { smsCheckin: "yes" } })).status).toBe(400);
   });
 });
+
+describe("the hub's views", () => {
+  it("bracket, watch, leaderboard, friends and your tables all agree with the director and the ledger", async () => {
+    const cup = await makeCup({ capacity: 32, minEntries: 4, expectedEntries: 32 });     // simulate mode: whole slots finish at once
+    const ids = await bulkPlayers(32, 10_000);
+    await bulkEnter(cup, ids);
+    const cookies = await sessionsFor(ids);
+    // ids[0] invited ids[1] and ids[2]; ids[3] invited ids[0]. ids[4] knows nobody.
+    for (const [p, by] of [[ids[1], ids[0]], [ids[2], ids[0]], [ids[0], ids[3]]]) await DB.prepare("UPDATE registrations SET invited_by = ? WHERE cup_id = ? AND player_id = ?").bind(by, cup.id, p).run();
+    const d = director(cup.id), c = cup.c;
+    await d.tick(c.registrationClosesAt); await d.tick(c.startsAt - 300_000); await d.tick(c.startsAt);
+    const get = async (what: string, cookie?: string) => (await call("GET", `/api/cups/${cup.slug}/${what}`, { cookie })).json;
+
+    const watch = await get("tables");
+    expect(watch.tables.length).toBe(8);
+    expect(watch.tables.every((t: any) => t.done && t.players.length === 4 && typeof t.players[0] === "string" && !t.players[0].includes("-"))).toBe(true);   // names, never ids
+
+    let now = c.startsAt;
+    for (let i = 0; i < 20 && (await d.snapshot())!.phase === "running"; i++) {
+      const offers = await d.openOffers();
+      for (const o of offers.slice(0, Math.ceil(offers.length / 2))) await d.buySecondChance(o.player, now);
+      now += (c.breakSec + 1) * 1000; await d.tick(now);
+    }
+    expect((await d.snapshot())!.phase).toBe("settled");
+
+    // Bracket: every round by draw, exactly as the director seated it.
+    const b = (await call("GET", `/api/cups/${cup.slug}/bracket?fresh=1`)).json.bracket;
+    for (const r of b.rounds) {
+      const t = (await d.tables(r.slot)).filter(x => x.draw === r.draw);
+      expect([r.tables, r.players, r.finished]).toEqual([t.length, t.reduce((a, x) => a + x.players.length, 0), t.length]);
+    }
+    expect(b.finals.map((f: any) => f.draw)).toContain("GF");
+    expect(b.finals.find((f: any) => f.draw === "GF").result.length).toBeGreaterThanOrEqual(2);
+
+    // Leaderboard: the ledger's own sums, biggest first.
+    const lb = (await get("leaderboard")).leaders;
+    const ledger = (await DB.prepare("SELECT p.name, SUM(l.amount) AS won FROM ledger l JOIN players p ON p.id = l.player_id WHERE l.cup_id = ? AND l.kind IN ('table_pay', 'gf_prize') GROUP BY l.player_id ORDER BY won DESC, p.name LIMIT 50").bind(cup.id).all<{ name: string; won: number }>()).results;
+    expect(lb.map((x: any) => [x.name, x.won])).toEqual(ledger.map(x => [x.name, x.won]));
+    expect(lb[0].finish).toBe("champion");
+
+    // Friends: linked by an invite either way, plus you.
+    const f0 = (await get("friends", cookies.get(ids[0]))).friends;
+    const name = async (p: string) => (await DB.prepare("SELECT name FROM players WHERE id = ?").bind(p).first<string>("name"))!;
+    const nm = new Map(await Promise.all(ids.slice(0, 5).map(async p => [p, await name(p)] as const)));
+    expect(f0.map((x: any) => x.name).sort()).toEqual((await Promise.all([ids[0], ids[1], ids[2], ids[3]].map(name))).sort());
+    expect(f0.find((x: any) => x.me).name).toBe(await name(ids[0]));
+    for (const p of [ids[0], ids[1], ids[2], ids[3]]) {                                       // each friend's winnings are the ledger's
+      const won = await DB.prepare("SELECT COALESCE(SUM(amount), 0) AS w FROM ledger WHERE cup_id = ? AND player_id = ? AND kind IN ('table_pay', 'gf_prize')").bind(cup.id, p).first<number>("w");
+      expect(f0.find((x: any) => x.name === nm.get(p))).toMatchObject({ won, entered: true });
+    }
+    expect((await get("friends", cookies.get(ids[4]))).friends.length).toBe(1);             // only yourself
+    expect((await call("GET", `/api/cups/${cup.slug}/friends`)).status).toBe(401);
+
+    // Your tables: every table you finished, with the pay that reached your wallet.
+    for (const p of ids.slice(0, 6)) {
+      const me = await get("me", cookies.get(p));
+      const paid = await DB.prepare("SELECT COALESCE(SUM(amount), 0) AS w FROM ledger WHERE cup_id = ? AND player_id = ? AND kind = 'table_pay'").bind(cup.id, p).first<number>("w");
+      expect(me.history.reduce((a: number, h: any) => a + (h.draw === "GF" ? 0 : h.pay), 0)).toBe(paid);
+      expect(me.history.every((h: any) => h.place >= 1 && h.place <= h.of)).toBe(true);
+    }
+  }, 60_000);
+});
+
+describe("share cards (PX-5)", () => {
+  it("say how the player did, escape what they typed, and link back with them as the inviter", async () => {
+    const cup = await makeCup({ capacity: 16, minEntries: 4, expectedEntries: 16, scEnabled: false });
+    const ids = await bulkPlayers(16, 10_000);
+    await bulkEnter(cup, ids);
+    await DB.prepare("UPDATE players SET name = ? WHERE id = ?").bind(`Ada <b>&"`, ids[0]).run();
+    const card = async (p: string) => { const r = await exports.default.fetch(`${ORIGIN}/api/cups/${cup.slug}/card/${p}`); return { status: r.status, type: r.headers.get("Content-Type"), svg: await r.text() }; };
+    const before = await card(ids[0]);
+    expect(before.type).toMatch(/^image\/svg\+xml/);
+    expect(before.svg).toContain("I&#39;m in");                                  // (an escaped apostrophe)
+    expect(before.svg).toContain("Ada &lt;b&gt;&amp;&quot;");                     // typed text can't become markup
+    expect(before.svg).not.toContain(ids[0]);                                     // no ids on the card
+    const d = director(cup.id), c = cup.c;
+    await d.tick(c.registrationClosesAt); await d.tick(c.startsAt - 300_000);
+    let now = c.startsAt;
+    for (let i = 0; i < 12 && (await d.snapshot())!.phase !== "settled"; i++) { await d.tick(now); now += (c.breakSec + 1) * 1000; }
+    const champ = await DB.prepare("SELECT player_id FROM registrations WHERE cup_id = ? AND finish = 'champion'").bind(cup.id).first<string>("player_id");
+    const out = await DB.prepare("SELECT player_id, finish FROM registrations WHERE cup_id = ? AND finish LIKE 'main-r%' LIMIT 1").bind(cup.id).first<{ player_id: string; finish: string }>();
+    const ch = await card(champ!);
+    expect(ch.svg).toContain("Champion!");
+    expect(ch.svg).toMatch(/\+[\d,]+ coins won/);
+    expect((await card(out!.player_id)).svg).toContain(`Reached round ${out!.finish.slice(6)}`);
+    expect((await card(crypto.randomUUID())).status).toBe(404);                  // not in this cup
+    const page = await exports.default.fetch(`${ORIGIN}/s/${cup.slug}/${champ}`);
+    const html = await page.text();
+    expect(page.status).toBe(200);
+    expect(html).toContain('property="og:title"');
+    expect(html).toContain(`/cup/?c=${cup.slug}&amp;ref=${champ}`);
+  }, 60_000);
+});

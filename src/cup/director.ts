@@ -644,6 +644,27 @@ export class CupDirector extends DurableObject<DirectorEnv> {
     };
   }
 
+  /** The bracket (PX-2): every slot by draw, and the deciding tables in full. Public, edge-cached by the route. */
+  async bracket(): Promise<Bracket | null> {
+    const s = this.state();
+    if (!s) return null;
+    const rounds = this.sql.exec(`SELECT slot, draw, COUNT(*) AS tables, SUM(json_array_length(players)) AS players, SUM(result IS NOT NULL) AS finished, MAX(pay1) AS pay1, MAX(pay2) AS pay2, MAX(final) AS final
+      FROM tbl GROUP BY slot, draw ORDER BY slot, draw`).toArray();
+    const finals = (this.sql.exec("SELECT slot, draw, code, players, result FROM tbl WHERE final = 1 OR draw = 'GF' ORDER BY slot").toArray() as unknown as { slot: number; draw: string; code: string; players: string; result: string | null }[])
+      .map(t => ({ slot: t.slot, draw: t.draw, code: t.code, players: JSON.parse(t.players), result: t.result ? JSON.parse(t.result) : null }));
+    return { phase: s.phase, slot: s.slot, field: s.N, rounds: rounds as unknown as Bracket["rounds"], finals };
+  }
+
+  /** Tables in play right now, the biggest stakes first (the Grand Final, then finals, then by pay). For Watch. */
+  async liveTables(limit = 60): Promise<{ code: string; slot: number; draw: string; final: boolean; pay1: number; pay2: number; players: string[]; done: boolean }[]> {
+    const s = this.state();
+    if (!s?.slot) return [];
+    const codes = this.get<string[]>(`codes:${s.slot}`) ?? [];
+    return (this.sql.exec(`SELECT code, slot, draw, final, pay1, pay2, players, result FROM tbl WHERE code IN (SELECT value FROM json_each(?))
+      ORDER BY result IS NOT NULL, draw = 'GF' DESC, final DESC, pay1 DESC, code LIMIT ?`, JSON.stringify(codes), Math.min(200, limit)).toArray() as unknown as TableRow[])
+      .map(t => ({ code: t.code, slot: t.slot, draw: t.draw, final: !!t.final, pay1: t.pay1, pay2: t.pay2, players: JSON.parse(t.players), done: !!t.result }));
+  }
+
   /** Tests and rehearsals: the full table list for a slot. */
   async tables(slot: number): Promise<{ code: string; draw: string; players: string[]; result: string[] | null; pay1: number; pay2: number; n: number; final: boolean; late: boolean }[]> {
     return this.tablesOf(slot).map(t => ({ code: t.code, draw: t.draw, players: JSON.parse(t.players), result: t.result ? JSON.parse(t.result) : null, pay1: t.pay1, pay2: t.pay2, n: t.n, final: !!t.final, late: !!t.late }));
@@ -656,6 +677,12 @@ export class CupDirector extends DurableObject<DirectorEnv> {
   }
   /** Rows written by this object since it woke, and by its D1 calls: read and reset (cost tests). */
   async rowsWritten(): Promise<{ do: number; d1: number; gates: number }> { const w = { ...this.written, gates: this.gateCalls }; this.written = { do: 0, d1: 0 }; this.gateCalls = 0; return w; }
+}
+
+export interface Bracket {
+  phase: string; slot: number; field: number;
+  rounds: { slot: number; draw: string; tables: number; players: number; finished: number; pay1: number; pay2: number; final: number }[];
+  finals: { slot: number; draw: string; code: string; players: string[]; result: string[] | null }[];
 }
 
 /* ---------- helpers shared with the tables (src/cup/tokens.ts) ---------- */

@@ -22,3 +22,7 @@ CREATE TABLE sms_spend (
   n    INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (day, kind)
 ) WITHOUT ROWID;
+
+-- Phase 7 hub: friends are players linked by an invite (either way), so look those links up without a scan.
+CREATE INDEX registrations_inviter ON registrations(invited_by) WHERE invited_by IS NOT NULL;
+CREATE INDEX registrations_player ON registrations(player_id);

@@ -1306,6 +1306,9 @@ setInterval(()=>{
   if(net.on&&G&&!ui.busy&&clockLeft()!==null){renderSeats(); renderStatus();}
   if(net.cup&&G&&!G.over&&!ui.busy){renderTop(); renderSeats();}   // the table clock
   if(net.cup&&ui.sheet==='cupwait'&&net.cupMeta) cupWait(null);    // the deal countdown
+  if(net.cup&&ui.sheet==='result'&&net.cupAfter){const o=net.cupAfter.me.live&&net.cupAfter.me.live.offer, r=$('#cupRing');
+    if(o&&r){const left=Math.max(0,Math.ceil((o.expires-Date.now())/1000)); r.textContent=left+'s'; if(!left) paintCupAfter();}}
+  if(net.cup&&net.cupEnd&&G&&!G.over){const left=Math.ceil((net.cupEnd-Date.now())/1000); if(left<=60&&left>55&&!net.minuteSaid){net.minuteSaid=true; announce('One minute left on the table clock.');}}
   if(net.on&&(net.asking||net.asks.length)) renderAsks();      // the countdowns
 },1000);
 document.addEventListener('visibilitychange',()=>{
@@ -1439,12 +1442,56 @@ function renderCupResult(){
   const how=c.how==='clock'?'The table clock ran out, so the fewest points wins.':c.how==='forfeit'?'The others forfeited.':c.how==='stalemate'?'Nobody could move, so the fewest cards wins.':esc(G.players[places[0]].name)+' checked up.';
   const head=mine===0?'You won the table!':mine>0?'You finished '+PLACE[mine+1]:esc(G.players[places[0]].name)+' wins the table';
   const paid=mine>=0&&pay(mine)?'<p class="rules-p"><b>'+pay(mine)+' coins</b> are in your wallet.</p>':c.draw==='GF'&&mine>=0?'<p class="rules-p">Grand Final prizes are paid when the cup ends.</p>':'';
-  const html='<h2>'+head+'</h2><p class="rules-p">'+how+'</p>'+paid+'<ul class="res">'+rows+'</ul>'+
+  const html='<h2>'+head+'</h2><p class="rules-p">'+how+'</p>'+paid+'<div id="cupAfter" aria-live="polite"></div><ul class="res">'+rows+'</ul>'+
     '<div class="sheet-actions"><a class="btn primary" href="'+esc(net.cup.back)+'">Back to the cup</a></div>';
   if(ui.sheet==='result'&&!$('#sheet').hidden&&ui.resultHTML===html) return;
   openSheet(html); ui.sheet='result'; ui.resultHTML=html;
   $('#sheetClose').hidden=false;
+  announce(head.replace(/<[^>]+>/g,'')+'. '+how.replace(/<[^>]+>/g,''));
+  if(mine>=0) cupAfter(); else paintCupAfter();
 }
+/* After a cup table (PX-3): the cup's net so far, always, and what comes next: a Second Chance offer with its
+   countdown, "through", or the end of your cup. The table doesn't know your wallet, so this asks the cup. */
+async function cupAfter(){
+  const slug=net.cup.slug, code=net.cup.code;
+  for(let i=0;i<4;i++){
+    let me=null,cup=null;
+    try{
+      const [a,b]=await Promise.all([fetch('/api/cups/'+slug+'/me',{cache:'no-store'}),fetch('/api/cups/'+slug)]);
+      me=a.ok?await a.json():null; cup=b.ok?(await b.json()).cup:null;
+    }catch(e){/* offline: try again */}
+    if(me&&me.entry&&cup){net.cupAfter={me,cup,code}; paintCupAfter(); if((me.history||[]).some(h=>h.code===code)) return;}
+    await wait(1500);           // the director may not have the result yet
+  }
+}
+function paintCupAfter(){
+  const el=$('#cupAfter'), a=net.cupAfter; if(!el||!a||a.code!==net.cup.code) return;
+  const e=a.me.entry, l=a.me.live||{}, c=a.cup, f=x=>Number(x).toLocaleString('en-NG');
+  const staked=c.entryFee+(e.sc_bought?c.scFee:0), won=e.won||0, nett=won-staked;
+  let html='<div class="cup-net" aria-label="Your cup so far"><span>Staked '+f(staked)+'</span><span>Won '+f(won)+'</span><b class="'+(nett<0?'neg':'pos')+'">Net '+(nett<0?'−':'+')+f(Math.abs(nett))+'</b></div>';
+  const o=l.offer, reported=(a.me.history||[]).some(h=>h.code===a.code);
+  if(o&&!o.bought&&o.expires>Date.now()){
+    const left=Math.max(0,Math.ceil((o.expires-Date.now())/1000));
+    const from=o.payFromWinnings==='off'?'Paid from your wallet: this cup\'s winnings can\'t be used for it.':won>=o.fee?'Paid from what you\'ve won in this cup.':'Paid from your wallet.';
+    html+='<div class="cup-offer"><b>Second Chance: '+f(o.fee)+' coins</b><span>Play other first-time losers. Win your table to stay in; 2nd is still paid. '+from+'</span>'+
+      '<div class="sheet-actions"><span class="ring" id="cupRing" role="timer" aria-label="Seconds left">'+left+'s</span><button class="btn primary" type="button" id="cupBuy">Buy back in for '+f(o.fee)+'</button></div><span id="cupBuyMsg" role="status"></span></div>';
+    if(!net.offerSaid){net.offerSaid=true; announce('Second Chance offer: buy back in for '+o.fee+' coins within '+left+' seconds.');}
+  }else if(o&&o.bought) html+='<p class="rules-p">You\'re in Second Chance. Your next table comes after the break.</p>';
+  else if(!reported) html+='<p class="rules-p">Checking with the cup…</p>';
+  else if(c.state==='running'&&(l.finish||(net.cupMeta&&net.cupMeta.draw==='GF'))) html+='<p class="rules-p">'+(net.cupMeta&&net.cupMeta.draw==='GF'?'Grand Final prizes are paid when the cup ends.':'Your cup is over. Thanks for playing.')+'</p>';
+  else if(c.state==='running') html+='<p class="rules-p">You\'re through. Your next table comes after the break, and we\'ll tell you when it\'s ready.</p>';
+  el.innerHTML=html;
+  const b=$('#cupBuy'); if(b) b.onclick=async()=>{
+    b.disabled=true;
+    const r=await fetch('/api/cups/'+net.cup.slug+'/second-chance',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>null);
+    if(r&&r.ok){announce('You bought a Second Chance.'); cupAfter(); return;}
+    const j=r?await r.json().catch(()=>({})):{};
+    $('#cupBuyMsg').textContent=j.error==='insufficient-funds'?'Not enough coins for that.':j.error==='offer-closed'?'The offer has closed.':'That didn\'t work. Try again.';
+    b.disabled=false;
+  };
+}
+/* Screen readers hear results, offers and the last minute of the table clock (PX-6). */
+function announce(text){const el=$('#sr'); if(!el) return; el.textContent=''; setTimeout(()=>{el.textContent=text;},60);}
 /* The table clock, on your own seat (the top bar has no room for it on a phone). */
 function cupClock(){
   const left=net.cupEnd&&G&&!G.over?Math.max(0,Math.ceil((net.cupEnd-Date.now())/1000)):null;

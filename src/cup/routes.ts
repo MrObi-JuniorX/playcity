@@ -6,6 +6,7 @@ import { cupAccount, cupSpec, playerAccount, playerSpec, transferStatements, ens
 import { openWallet } from "../wallet/wallet";
 import type { CupConfig } from "./config";
 import { gateName, shardOf } from "./gate";
+import { shareCardRoute } from "./share";
 
 /* Public cup API (docs/whot-cup-prd.md, Phase 4).
    GET  /api/cups                       cups players can see now (edge-cached 5 s)
@@ -14,6 +15,11 @@ import { gateName, shardOf } from "./gate";
    POST /api/cups/:slug/enter           { ref? }  stake the entry fee; ref = the player whose invite brought you
    POST /api/cups/:slug/checkin         "I'm here", during the check-in window
    POST /api/cups/:slug/second-chance   buy back in after a first loss, while the offer is open
+   GET  /api/cups/:slug/bracket         every round by draw, and the deciding tables (edge-cached 5 s)
+   GET  /api/cups/:slug/tables          tables in play now, biggest stakes first, for Watch (edge-cached 5 s)
+   GET  /api/cups/:slug/leaderboard     this cup's biggest winners (edge-cached 5 s)
+   GET  /api/cups/:slug/friends         you and the players you're linked to by an invite, in this cup (signed in)
+   GET  /api/cups/:slug/card/:player    a share card (SVG, src/cup/share.ts)
 
    Entering is one D1 transaction: the registration row, the seat counter (its CHECK refuses an entry past
    capacity) and the stake. A full cup or an empty wallet rolls the whole thing back, so nobody pays for a seat
@@ -25,13 +31,17 @@ interface CupRow { id: string; slug: string; name: string; state: string; config
 
 export async function cupRoute(req: Request, env: AuthEnv, path: string, ctx: ExecutionContext): Promise<Response | null> {
   if (path === "/api/cups" && req.method === "GET") return cached(req, ctx, () => listCups(env));
+  const card = path.match(/^\/api\/cups\/([a-z0-9-]{3,48})\/card\/([0-9a-f-]{36})$/);
+  if (card && req.method === "GET") return shareCardRoute(env, req, card[1], card[2]);
   const m = path.match(/^\/api\/cups\/([a-z0-9-]{3,48})(?:\/([a-z-]+))?$/);
   if (!m) return path.startsWith("/api/cups") ? fail(404, "not-found") : null;
   const [, slug, action] = m;
   if (!action && req.method === "GET") return cached(req, ctx, () => cupDetail(env, slug));
+  if (req.method === "GET" && action && action in PUBLIC_VIEWS) return cached(req, ctx, () => PUBLIC_VIEWS[action](env, slug));
   const cup = await env.DB.prepare("SELECT * FROM cups WHERE slug = ?").bind(slug).first<CupRow>();
   if (!cup || !PUBLIC_STATES.includes(cup.state)) return fail(404, "no-cup");
   if (action === "me" && req.method === "GET") return myEntry(env, req, cup);
+  if (action === "friends" && req.method === "GET") return friends(env, req, cup);
   if (req.method !== "POST") return fail(404, "not-found");
   if (!sameOrigin(req)) return fail(403, "bad-origin");
   if (action === "enter") return enter(env, req, cup);
@@ -97,7 +107,13 @@ async function myEntry(env: AuthEnv, req: Request, cup: CupRow): Promise<Respons
   if (!s) return fail(401, "signed-out");
   const reg = await env.DB.prepare("SELECT state, seq, draw_rank, checked_in_at, sc_bought, won, finish FROM registrations WHERE cup_id = ? AND player_id = ?").bind(cup.id, s.playerId).first();
   const live = cup.state === "running" && reg ? await env.CUP.getByName(cup.id).whereIs(s.playerId) : null;
-  return json({ entry: reg, live });
+  // Every table this player has finished in this cup, with what it paid them (PX-3).
+  const history = reg ? (await env.DB.prepare(`SELECT r.slot, r.draw, r.table_code AS code, CAST(j.key AS INTEGER) + 1 AS place, json_array_length(r.places_json) AS of,
+      CASE WHEN j.key = 0 THEN r.pay1 WHEN j.key = 1 THEN r.pay2 ELSE 0 END AS pay, r.late
+    FROM table_results r, json_each(r.places_json) j WHERE r.cup_id = ? AND j.value = ? ORDER BY r.slot`).bind(cup.id, s.playerId).all()).results : [];
+  // What they've won so far, from the ledger (registrations.won is only written at settlement): the net is always right.
+  const won = reg ? await env.DB.prepare("SELECT COALESCE(SUM(amount), 0) AS w FROM ledger WHERE cup_id = ? AND player_id = ? AND kind IN ('table_pay', 'gf_prize')").bind(cup.id, s.playerId).first<number>("w") : 0;
+  return json({ entry: reg ? { ...reg, won } : null, live, history });
 }
 
 interface PlayerRow { name: string | null; avatar_shape: string | null; adult_at: number | null; cool_off_until: number | null; weekly_limit: number | null; phone_country: string; created_at: number }
@@ -211,4 +227,59 @@ export async function cupHubRoute(req: Request, env: AuthEnv, slug: string): Pro
   for (const h of TABLE_HEADERS) headers.delete(h);
   headers.set("X-Cup-Player", s.playerId);
   return env.CUP_GATE.getByName(gateName(cup.id, shardOf(s.playerId))).fetch(new Request(req.url, { headers }));
+}
+
+/* ---------- the hub's views (Phase 7, PX-2) ---------- */
+
+/** Display names for player ids. Public views carry names only, never ids. */
+async function namesOf(env: AuthEnv, ids: string[]): Promise<Map<string, string>> {
+  if (!ids.length) return new Map();
+  const r = await env.DB.prepare("SELECT id, name FROM players WHERE id IN (SELECT value FROM json_each(?))").bind(JSON.stringify([...new Set(ids)])).all<{ id: string; name: string | null }>();
+  return new Map(r.results.map(x => [x.id, x.name || "Player"]));
+}
+async function liveCup(env: AuthEnv, slug: string) {
+  const r = await env.DB.prepare("SELECT id, state FROM cups WHERE slug = ?").bind(slug).first<{ id: string; state: string }>();
+  return r && PUBLIC_STATES.includes(r.state) ? r : null;
+}
+
+const PUBLIC_VIEWS: Record<string, (env: AuthEnv, slug: string) => Promise<Response>> = {
+  async bracket(env, slug) {
+    const cup = await liveCup(env, slug);
+    if (!cup) return fail(404, "no-cup");
+    const b = ["running", "settled"].includes(cup.state) ? await env.CUP.getByName(cup.id).bracket() : null;
+    if (!b) return json({ bracket: null });
+    const names = await namesOf(env, b.finals.flatMap(f => f.players));
+    const nm = (ids: string[] | null) => ids ? ids.map(p => names.get(p) ?? "Player") : null;
+    return json({ bracket: { ...b, finals: b.finals.map(f => ({ slot: f.slot, draw: f.draw, code: f.code, players: nm(f.players), result: nm(f.result) })) } });
+  },
+  async tables(env, slug) {
+    const cup = await liveCup(env, slug);
+    if (!cup) return fail(404, "no-cup");
+    const t = cup.state === "running" ? await env.CUP.getByName(cup.id).liveTables(60) : [];
+    const names = await namesOf(env, t.flatMap(x => x.players));
+    return json({ tables: t.map(x => ({ ...x, players: x.players.map(p => names.get(p) ?? "Player") })) });
+  },
+  async leaderboard(env, slug) {
+    const cup = await liveCup(env, slug);
+    if (!cup) return fail(404, "no-cup");
+    const rows = await env.DB.prepare(`SELECT p.name, SUM(l.amount) AS won, r.finish, r.state FROM ledger l JOIN players p ON p.id = l.player_id
+        LEFT JOIN registrations r ON r.cup_id = l.cup_id AND r.player_id = l.player_id
+      WHERE l.cup_id = ? AND l.kind IN ('table_pay', 'gf_prize') GROUP BY l.player_id ORDER BY won DESC, p.name LIMIT 50`).bind(cup.id).all<{ name: string | null; won: number; finish: string | null; state: string | null }>();
+    return json({ leaders: rows.results.map((r, i) => ({ rank: i + 1, name: r.name || "Player", won: r.won, finish: r.finish, out: r.state === "finished" || !!r.finish })) });
+  },
+};
+
+/** You and your friends in this cup. A friend is anyone linked to you by an invite, either way, in any cup. */
+async function friends(env: AuthEnv, req: Request, cup: CupRow): Promise<Response> {
+  const s = await currentSession(env, req);
+  if (!s) return fail(401, "signed-out");
+  const rows = await env.DB.prepare(`WITH f(id) AS (
+        SELECT player_id FROM registrations WHERE invited_by = ?1
+        UNION SELECT invited_by FROM registrations WHERE player_id = ?1 AND invited_by IS NOT NULL
+        UNION SELECT ?1)
+      SELECT p.id = ?1 AS me, p.name, r.state, r.finish, r.sc_bought,
+        (SELECT COALESCE(SUM(amount), 0) FROM ledger WHERE cup_id = ?2 AND player_id = p.id AND kind IN ('table_pay', 'gf_prize')) AS won
+      FROM f JOIN players p ON p.id = f.id LEFT JOIN registrations r ON r.cup_id = ?2 AND r.player_id = p.id
+      ORDER BY r.state IS NULL, won DESC, p.name LIMIT 100`).bind(s.playerId, cup.id).all<{ me: number; name: string | null; state: string | null; finish: string | null; sc_bought: number | null; won: number }>();
+  return json({ friends: rows.results.map(r => ({ me: !!r.me, name: r.name || "Player", entered: !!r.state && !["refunded", "no-show"].includes(r.state), state: r.state, finish: r.finish, won: r.won })) });
 }
