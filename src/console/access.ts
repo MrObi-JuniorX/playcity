@@ -3,8 +3,9 @@ import {
 } from "@simplewebauthn/server";
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from "@simplewebauthn/server";
 import { currentSession, cookies } from "../auth/session";
-import { sha256, token } from "../auth/crypto";
+import { hmac, same, sha256, token } from "../auth/crypto";
 import type { AuthEnv } from "../auth/env";
+import { ipOf } from "../http";
 
 /* Who may use the console (docs/whot-cup-prd.md, AD-1).
 
@@ -15,7 +16,10 @@ import type { AuthEnv } from "../auth/env";
       tied to the player, so a stolen console cookie is useless without the same player's session.
 
    Registering a first passkey needs only (1) and (2); every later passkey needs a console session too, so a stolen
-   phone session can't add an attacker's key to an account that already has one. */
+   phone session can't add an attacker's key to an account that already has one.
+
+   For now there is also a shared code (the CONSOLE_CODE secret; see "the temporary code" below), because players
+   can't sign in on a deployed site yet. It stops working the moment cash is switched on. */
 
 export type Role = "owner" | "cup-admin" | "integrity" | "finance";
 export const ROLES: Role[] = ["owner", "cup-admin", "integrity", "finance"];
@@ -23,7 +27,7 @@ export const CONSOLE_COOKIE = "__Host-pc_c";
 const CONSOLE_MS = 8 * 3600_000;
 const CHALLENGE_MS = 5 * 60_000;
 
-export type ConsoleEnv = AuthEnv & { OWNER_PLAYER_IDS?: string; CASH_ENABLED?: string };
+export type ConsoleEnv = AuthEnv & { OWNER_PLAYER_IDS?: string; CASH_ENABLED?: string; CONSOLE_CODE?: string };
 
 export async function rolesOf(env: ConsoleEnv, playerId: string): Promise<Role[]> {
   const roles = new Set<Role>();
@@ -48,8 +52,9 @@ export async function staffOf(env: ConsoleEnv, req: Request): Promise<Staff | nu
 
 /** A fully unlocked console user (phone session + staff + passkey session), or null. */
 export async function consoleUser(env: ConsoleEnv, req: Request): Promise<ConsoleUser | null> {
-  const staff = await staffOf(env, req);
   const t = cookies(req)[CONSOLE_COOKIE];
+  if (t?.startsWith("code.")) return (await codeCookieOk(env, t)) ? CODE_USER : null;
+  const staff = await staffOf(env, req);
   if (!staff || !t || t.length > 64) return null;
   const id = await sha256(t);
   const row = await env.DB.prepare("SELECT player_id FROM console_sessions WHERE id = ? AND revoked_at IS NULL AND expires_at > ?").bind(id, Date.now()).first<string>("player_id");
@@ -140,10 +145,50 @@ export async function loginVerify(env: ConsoleEnv, req: Request, staff: Staff, r
     env.DB.prepare("UPDATE passkeys SET counter = ?, last_used_at = ? WHERE id = ?").bind(v.authenticationInfo.newCounter, now, key.id),
     env.DB.prepare("INSERT INTO console_sessions (id, player_id, passkey_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?)").bind(await sha256(t), staff.playerId, key.id, now, now + CONSOLE_MS),
   ]);
-  return { cookie: `${CONSOLE_COOKIE}=${t}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${CONSOLE_MS / 1000}`, passkeyId: key.id };
+  return { cookie: consoleCookie(t), passkeyId: key.id };
 }
 
+const consoleCookie = (value: string) => `${CONSOLE_COOKIE}=${value}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${CONSOLE_MS / 1000}`;
 export const clearConsoleCookie = () => `${CONSOLE_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`;
+
+/* ---------- the temporary code ---------- */
+
+/* One shared secret that opens the console as an owner, with no player session. The cookie is signed and bound to the
+   code, so changing the secret ends every session; it holds no row because console_sessions needs a real player. */
+const MAX_WRONG_PER_IP = 5, IP_WINDOW_MS = 15 * 60_000;
+const MAX_WRONG_ALL = 30, ALL_WINDOW_MS = 24 * 3600_000;
+export const CODE_ACTOR = "console-code";
+const CODE_USER: ConsoleUser = { playerId: CODE_ACTOR, roles: ["owner"], name: "Console code", sessionId: "code" };
+
+export const codeEnabled = (env: ConsoleEnv) => !!env.CONSOLE_CODE && !!env.PHONE_HMAC_KEY && env.CASH_ENABLED !== "1";
+
+const codeSig = (env: ConsoleEnv, exp: string) => hmac(env.PHONE_HMAC_KEY!, "console-code-cookie", `${exp}:${env.CONSOLE_CODE}`);
+
+async function codeCookieOk(env: ConsoleEnv, value: string): Promise<boolean> {
+  if (!codeEnabled(env) || value.length > 100) return false;
+  const [, exp, sig] = value.split(".");
+  return Number(exp) > Date.now() && !!sig && same(sig, await codeSig(env, exp));
+}
+
+/** Try the code. Each try takes a place in the limits before the code is looked at, in one statement, so guesses sent
+    together can't slip past the count. A right code gives its place back; a refused try takes none, so hammering a
+    locked console doesn't lengthen the lock. Returns the Set-Cookie line, "wrong", or "locked". */
+export async function unlockWithCode(env: ConsoleEnv, req: Request, code: string): Promise<{ cookie: string } | "wrong" | "locked"> {
+  const hk = env.PHONE_HMAC_KEY!, now = Date.now(), ip = await hmac(hk, "ip", ipOf(req) || "none");
+  const place = await env.DB.prepare(`INSERT INTO console_code_attempts (ip_hash, at) SELECT ?1, ?2
+      WHERE (SELECT COUNT(*) FROM console_code_attempts WHERE ip_hash = ?1 AND at > ?3) < ?4
+        AND (SELECT COUNT(*) FROM console_code_attempts WHERE at > ?5) < ?6 RETURNING id`)
+    .bind(ip, now, now - IP_WINDOW_MS, MAX_WRONG_PER_IP, now - ALL_WINDOW_MS, MAX_WRONG_ALL).first<number>("id");
+  if (place === null) {
+    const all = await env.DB.prepare("SELECT COUNT(*) AS n FROM console_code_attempts WHERE at > ?").bind(now - ALL_WINDOW_MS).first<number>("n");
+    if ((all ?? 0) >= MAX_WRONG_ALL) console.error(JSON.stringify({ alert: true, msg: "console code locked: too many wrong tries" }));
+    return "locked";
+  }
+  if (!same(await hmac(hk, "console-code", code), await hmac(hk, "console-code", env.CONSOLE_CODE!))) return "wrong";
+  await env.DB.prepare("DELETE FROM console_code_attempts WHERE id = ?").bind(place).run();
+  const exp = String(now + CONSOLE_MS);
+  return { cookie: consoleCookie(`code.${exp}.${await codeSig(env, exp)}`) };
+}
 
 /* ---------- audit (AD-6) ---------- */
 
@@ -161,6 +206,7 @@ export async function consoleCleanup(env: ConsoleEnv, now = Date.now()) {
   await env.DB.batch([
     env.DB.prepare("DELETE FROM webauthn_challenges WHERE expires_at < ?").bind(now),
     env.DB.prepare("DELETE FROM console_sessions WHERE expires_at < ?").bind(now - 30 * 24 * 3600_000),
+    env.DB.prepare("DELETE FROM console_code_attempts WHERE at < ?").bind(now - ALL_WINDOW_MS),
     env.DB.prepare("DELETE FROM audit WHERE at < ?").bind(now - 2 * 365 * 24 * 3600_000),
   ]);
 }

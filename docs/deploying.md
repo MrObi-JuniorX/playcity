@@ -48,9 +48,24 @@ npx wrangler secret put PHONE_ENC_KEY --env staging
 | `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET` | A Turnstile widget for the site's hostname (Cloudflare dashboard, Turnstile) |
 | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | `npm run vapid` prints a pair. Keep each environment's pair for good: a new pair stops every saved notification subscription |
 | `OWNER_PLAYER_IDS` | The first console owner's player id (sign in on that environment's site, then read your id on the console's "not on the staff list" screen) |
+| `CONSOLE_CODE` | Temporary: the shared code that opens `/console/` as an owner (below) |
 | `TURN_KEY_ID`, `TURN_KEY_API_TOKEN` | Optional: TURN for players behind strict networks (walkie-talkie, Flick Football) |
 
 Sign-in also needs an SMS provider, which isn't chosen yet (PRD section 13, question 1). Until one is added, live sign-in says it isn't open yet: the free games work, the cup pages show, and nobody can enter a cup.
+
+**The console code.** Players can't sign in yet (`docs/usermgt.md`), so `/console/` opens with a shared code. This repository is public, so the code lives only in the secret, never in a file here. To set or change it, run the command below and type the code; changing it signs everyone out of the console. To remove it, use `npx wrangler secret delete CONSOLE_CODE --env staging`, and the passkey gate comes back.
+
+```bash
+npx wrangler secret put CONSOLE_CODE --env staging
+```
+
+Anyone with the code has full owner access, and the audit log records them all as `console-code`. Five wrong tries from one network wait 15 minutes, and 30 wrong tries overall lock the code for up to a day. To clear a lock:
+
+```bash
+npx wrangler d1 execute playcity-staging --remote --env staging --command "DELETE FROM console_code_attempts"
+```
+
+Cups that need a countersign can't be published through the code, since it counts as one person. The code stops working if `CASH_ENABLED` is `1`, and it must be gone before any cash cup.
 
 **5. The first deploy.** Merge `main` into `staging`. The workflow creates the `playcity-staging` database on its first run, applies every migration, and deploys. Do the same for `production` when staging looks right. Deploying `production` replaces any Worker already called `playcity` in the account.
 

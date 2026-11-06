@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { coerceConfig, configHash, defaultCupConfig, FIELDS, isFrozen, previewCup, publishChecks, validateCupConfig } from "../../src/cup/config";
+import { coerceConfig, configHash, defaultCupConfig, FIELDS, isFrozen, previewCup, publishChecks, SECTIONS, validateCupConfig } from "../../src/cup/config";
 
 /* The cup settings and publish checks (docs/whot-cup-prd.md, 5.1 and 5.2). */
 
@@ -9,6 +9,21 @@ const ctx = { now, cashEnabled: false, countersigned: false };
 describe("cup settings", () => {
   it("the admin form covers every setting, and nothing else", () => {
     expect(new Set(FIELDS.map(f => f.key))).toEqual(new Set(Object.keys(defaultCupConfig(now))));
+  });
+
+  it("every setting has a section, an i tag and a working condition", () => {
+    const ids = new Set<string>(SECTIONS.map(s => s.id));
+    for (const f of FIELDS) {
+      expect(ids.has(f.section), f.key).toBe(true);
+      expect(f.info.length, f.key).toBeGreaterThan(20);
+      if (f.showIf) expect(FIELDS.some(x => x.key === f.showIf!.key), f.key).toBe(true);
+      if (f.labels && f.type.kind === "choice") expect(Object.keys(f.labels).sort(), f.key).toEqual([...f.type.options].sort());
+    }
+    for (const s of SECTIONS) expect(FIELDS.some(f => f.section === s.id && !f.inactive), s.id).toBe(true);
+  });
+
+  it("settings that do nothing today aren't offered in the form", () => {
+    expect(FIELDS.filter(f => f.inactive).map(f => f.key).sort()).toEqual(["cheerPlayerShare", "cheers", "maxEntriesPerPlayer", "payoutHoldHours"]);
   });
 
   it("the defaults are valid and publishable, with registration still days away", () => {
