@@ -4,6 +4,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "deploy:staging": "node scripts/deploy.mjs staging",
+    "deploy:production": "node scripts/deploy.mjs production",
     "types": "wrangler types",
     "test": "npm run test:game && npm run test:worker",
     "test:game": "vitest run --config vitest.game.config.mts",

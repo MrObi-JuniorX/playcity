@@ -10,24 +10,57 @@ Two Cloudflare Workers, each fed by its own branch:
 
 Each Worker has its own database and its own Durable Objects (tables, cups, gates), so nothing done on staging can touch production. The two are `env.staging` and `env.production` in `wrangler.jsonc`; the top level of that file is local development and the tests.
 
+## Two ways to deploy
+
+Both run the same steps (type check, cost lint, build, tests, find or create the environment's database, apply its migrations, deploy the Worker), so use whichever suits the moment.
+
+| | From this machine (wrangler) | From GitHub (the Deploy workflow) |
+|---|---|---|
+| Command | `npm run deploy:staging` or `npm run deploy:production` | Merge into the `staging` or `production` branch, or run the workflow by hand (Actions, Deploy, Run workflow) |
+| Signs in with | `npx wrangler login` (once) | `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in the GitHub environment |
+| Good for | Quick deploys, the first deploy, and when GitHub isn't set up | A record of every release, and approval before production |
+| Setup | One-time setup 1 | One-time setup 2 to 4, as well |
+
+You don't have to pick one. Two rules keep them from fighting:
+- **Deploy a commit you can name.** Whichever way you deploy, the Worker runs what was committed. A deploy from GitHub replaces whatever the last deploy left, so don't deploy uncommitted changes you want to keep.
+- **Production deploys from the `production` branch.** `npm run deploy:production` refuses to run from any other branch, or with uncommitted changes, so the live site only ever gets what staging already ran. It also asks you to type `production` first (`--yes` skips the question).
+
 ## Shipping a release
 
 1. Merge your work into `main` (a pull request, with the tests green).
-2. Open a pull request from `main` into `staging` and merge it. The **Deploy** workflow (`.github/workflows/deploy.yml`) runs every test, applies new database migrations to the staging database, and deploys `playcity-staging`.
+2. Merge `main` into `staging`, then deploy staging: push the branch (GitHub deploys it, once set up) or run `npm run deploy:staging` from the `staging` branch.
 3. Check staging.
-4. Open a pull request from `staging` into `production` and merge it. The same workflow deploys `playcity`. If the production environment requires an approval (below), the deploy waits for it.
+4. Merge `staging` into `production`, then deploy production the same way: push the branch (GitHub waits for your approval if the production environment requires one) or run `npm run deploy:production` from the `production` branch.
 
-Only merge into `staging` from `main`, and into `production` from `staging`, so production only ever gets what staging already ran.
+Only merge into `staging` from `main`, and into `production` from `staging`.
+
+For a quick check of work that isn't merged yet, `npm run deploy:staging` also works from any branch. It warns you when the tree has uncommitted changes. Options for both commands (add them after `--`, for example `npm run deploy:staging -- --skip-tests`):
+
+| Option | What it does |
+|---|---|
+| `--skip-tests` | Skips the test suites. Type check, lint and build still run. The Worker tests can time out when the machine is busy, so this is useful then, but not for a release. |
+| `--yes` | Doesn't ask for confirmation (production asks by default). |
+| `--dry-run` | Prints every step and changes nothing. |
+
+If a step fails, nothing after it runs. Fix the problem and run the same command again: finding the database and applying migrations are safe to repeat. The command puts `wrangler.jsonc` back as it was afterwards, so there's nothing to commit.
 
 ## One-time setup
 
-**1. A Cloudflare API token.** In the Cloudflare dashboard: My Profile, API Tokens, Create Token, start from the **Edit Cloudflare Workers** template, and add the permission **Account · D1 · Edit**. Note your **Account ID** (Workers & Pages, in the right-hand column).
+**1. Sign in to Cloudflare from this machine** (what the wrangler commands need):
 
-**2. GitHub environments.** In the repository: Settings, Environments. Create `staging` and `production`, and in each add two secrets: `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` (the same token can serve both). On `production`, tick **Required reviewers** and add yourself, so a production deploy waits for your approval. Until the secrets exist, pushes to these branches still run the tests and skip the deploy with a warning.
+```bash
+npx wrangler login
+```
 
-**3. Protect the branches.** Settings, Branches: protect `staging` and `production` (changes only through pull requests, with the **Deploy / test** check passing).
+`npx wrangler whoami` shows which account you're on. That's all you need to deploy with `npm run deploy:staging`. Skip to step 4 for the Worker's own secrets.
 
-**4. The Worker's own secrets**, once per environment (`--env staging`, then `--env production`):
+**2. A Cloudflare API token** (GitHub deploys only). In the Cloudflare dashboard: My Profile, API Tokens, Create Token, start from the **Edit Cloudflare Workers** template, and add the permission **Account · D1 · Edit**. Note your **Account ID** (Workers & Pages, in the right-hand column).
+
+**3. GitHub environments** (GitHub deploys only). In the repository: Settings, Environments. Create `staging` and `production`, and in each add two secrets: `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` (the same token can serve both). On `production`, tick **Required reviewers** and add yourself, so a production deploy waits for your approval. Until the secrets exist, pushes to these branches still run the tests and skip the deploy with a warning.
+
+Also protect the `staging` and `production` branches (Settings, Branches: changes only through pull requests, with the **Deploy / test** check passing).
+
+**4. The Worker's own secrets**, once per environment (`--env staging`, then `--env production`). Do the first deploy first, so the Worker exists. These secrets belong to the Worker, so they work the same however it's deployed:
 
 ```bash
 openssl rand -base64 32
@@ -67,10 +100,10 @@ npx wrangler d1 execute playcity-staging --remote --env staging --command "DELET
 
 Cups that need a countersign can't be published through the code, since it counts as one person. The code stops working if `CASH_ENABLED` is `1`, and it must be gone before any cash cup.
 
-**5. The first deploy.** Merge `main` into `staging`. The workflow creates the `playcity-staging` database on its first run, applies every migration, and deploys. Do the same for `production` when staging looks right. Deploying `production` replaces any Worker already called `playcity` in the account.
+**5. The first deploy.** For staging, run `npm run deploy:staging` (or merge `main` into `staging` once GitHub is set up). It creates the `playcity-staging` database, applies every migration, and deploys. Then set the secrets in step 4. Do the same for `production` when staging looks right. Deploying `production` replaces any Worker already called `playcity` in the account.
 
 ## When something goes wrong
 
-- **Roll back the code:** `npx wrangler rollback --env production` returns to the previous version at once. Then revert the merge on the `production` branch, so the next deploy doesn't bring it back.
+- **Roll back the code:** `npx wrangler rollback --env production` returns to the previous version at once, whichever way it was deployed. Then revert the merge on the `production` branch, so the next deploy doesn't bring it back.
 - **Database migrations only go forward.** A rollback doesn't undo one. Write each migration so the code before it still works (add columns and tables; don't rename or drop in the same release).
-- **The workflow's database step** (`scripts/ci-d1.mjs`) finds each environment's database by name and fills its id into the deploy's copy of `wrangler.jsonc`. To pin the ids instead, replace `"set-by-deploy"` with the real ids (`npx wrangler d1 list`) and commit.
+- **The database step** (`scripts/ci-d1.mjs`, used by the workflow and by `npm run deploy:*`) finds each environment's database by name and fills its id into the deploy's copy of `wrangler.jsonc`. To pin the ids instead, replace `"set-by-deploy"` with the real ids (`npx wrangler d1 list`) and commit.
