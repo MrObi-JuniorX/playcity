@@ -44,7 +44,7 @@ Related:
 | Role | Who | Can |
 |---|---|---|
 | Visitor | Anyone | Play free tables, watch cups (delayed, no hands), see cup pages |
-| Player | Verified phone number, 18+ declared | Enter cups, stake, play, buy Second Chance, cheer, appear on leaderboards |
+| Player | Verified phone number, 18+ declared | Enter cups, stake, play, buy Second Chance, appear on leaderboards |
 | Spectator | Anyone with the link, signed in or not | Watch cup tables with a delay and no hidden cards |
 | Cup admin | Staff, allow-listed | Create, configure, publish, pause and cancel cups; see live operations |
 | Integrity reviewer | Staff, allow-listed | Work the collusion and fraud queue; hold, release or void results |
@@ -214,6 +214,7 @@ Screens and copy follow the player journey doc. Requirements that shape the buil
 - **PX-6** Accessibility: every result announced to screen readers, every timer readable as text, reduced motion respected.
 
 ### 6.8 Spectating and cheers (SP)
+*SP-2 and SP-3 were dropped with Phase 8 (2026-11-06). The `cheers` and `cheerPlayerShare` settings remain in the config but do nothing.*
 - **SP-1** Watch any cup table, delayed and with no hidden cards (TB-7). Signed-out viewers are welcome.
 - **SP-2** Cheers (signed-in players only): a fixed set of coin amounts, `cheerPlayerShare` to the player and the rest to the platform. Rate-limited, and never to yourself or to a player at your own table.
 - **SP-3** Grand Final mode: a single live table promoted on the home page, with a cheer meter and a commentary strip generated from public events only.
@@ -427,7 +428,7 @@ Tick each box as it ships with its tests green. Every phase ends with the cost p
 - [x] Turn clock with one fair computer move on timeout, table clock with the ranking rule, a 10 s hold on a dropped player's turn, then forfeit after the grace (TB-3, TB-4).
 - [x] Signed result with stats to the director (`report(code, places, sig, stats)`, stored in `table_results.stats_json`, migration `0005`). Retried with backoff until it lands or can never land, then the reveal window (90 s) and deletion of the row and the alarm (TB-5).
 - [x] Voice for seated people only when `voice = seated`. Preset phrases only (8 of them, one per player every 2.5 s) when `chat = presets` (TB-6). Watchers can do neither.
-- [x] Watchers: a public view built as each move happens and sent `spectatorDelayMoves` moves later. Nothing is shown until that many moves have been made. Hands appear only at the end, and only with `revealHands = after-table` (TB-7). `spectators = off` refuses watchers. Up to 200 watchers per table; the big Grand Final audience is Phase 8.
+- [x] Watchers: a public view built as each move happens and sent `spectatorDelayMoves` moves later. Nothing is shown until that many moves have been made. Hands appear only at the end, and only with `revealHands = after-table` (TB-7). `spectators = off` refuses watchers. Up to 200 watchers per table, the Grand Final included (Phase 8, which would have widened that, was removed).
 - [x] **S-1 leak fuzz** (`test/cup/table.test.ts`): 1,000 random cup games with 2 to 4 seats, random settings, late arrivals, drops, idle turns and junk moves. Every view of every move, for every seat and the watchers, is checked against the live game it was built from: no card id outside that seat's own hand, the played pile and the cards just played, and no market. Results for the director carry no card. Latest run: 33,718 moves, 88 timeouts, 712 forfeits, every way a table can end, no leaks. The wire is checked too (`test/worker/cuptable.test.ts`).
 - [x] **S-2:** watchers never get a hand or the market while the table runs, are never fewer than `spectatorDelayMoves` moves behind, and never go backwards (in the fuzz, and on the wire).
 - [x] **S-3:** a table is never told a seed. 200 identical tables deal 200 different decks, and 10,000 deals show no dependence between the round's seed and four card positions (chi-squared, p < 0.0001).
@@ -453,11 +454,8 @@ Tick each box as it ships with its tests green. Every phase ends with the cost p
 
 **Before Phase 7 goes live:** apply migration `0006_notifications.sql` remotely. Run `npm run vapid` once and store the three values with `wrangler secret put` (keep the pair for good: a new pair makes every subscription stale). Check-in texts also need the SMS provider (section 13, question 1).
 
-### Phase 8: Spectating, cheers and the Grand Final show
-- [ ] Watch list sorted by stakes, friends pinned (SP-1).
-- [ ] Cheers with limits and the player share (SP-2), written to the ledger.
-- [ ] Grand Final mode: home page takeover, cheer meter, commentary from public events (SP-3).
-- [ ] Tests: no cheer to yourself or your own table, rate limits, cheers balance in the ledger.
+### Phase 8: removed
+*Removed from this release (2026-11-06): cheers (SP-2) and the Grand Final show (SP-3) aren't needed for the coin launch. Watching (SP-1) shipped in Phases 6 and 7: delayed, card-free watchers, and the Watch tab with the biggest stakes first. Phase numbers below are unchanged.*
 
 ### Phase 9: Integrity
 - [ ] Post-cup detection job (8.3) and the flags table.
