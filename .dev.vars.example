@@ -6,5 +6,7 @@ PHONE_HMAC_KEY=
 PHONE_ENC_KEY=
 # The first console owner (their player id is shown on /console/ after phone sign-in). Comma-separated.
 OWNER_PLAYER_IDS=
+# Temporary: a shared code that opens /console/ with no sign-in. Pick your own. Leave empty for the passkey gate.
+CONSOLE_CODE=
 # Naira cups stay blocked unless this is 1 (PRD Phase 13).
 CASH_ENABLED=0

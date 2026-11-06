@@ -16,6 +16,7 @@ export default defineConfig({
         PHONE_HMAC_KEY: "dGVzdC1obWFjLWtleS10ZXN0LWhtYWMta2V5LXRlc3QtaG1hYw==",
         PHONE_ENC_KEY: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
         AUTH_LIMITS: JSON.stringify({ perCountryDay: { ZA: 2, AE: 1 }, globalDay: 400 }),
+        CONSOLE_CODE: "test-console-code",
         CUP_T2_FULL: process.env.CUP_T2_FULL ?? "",
         // A throwaway VAPID pair for the Web Push tests (never used anywhere else).
         VAPID_PUBLIC_KEY: "BNQzQ87CMRpZNToIOCtwDlTwTvjmAds6ZbCxMKbLaV8sAUNCEzNBEgpVteopf02X2Dq1my0Dt843j8zD539pEJo",

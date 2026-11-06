@@ -1,8 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import { call, signIn, E } from "./helpers";
 import { SoftPasskey } from "./passkey";
 import { configHash, defaultCupConfig, type CupConfig } from "../../src/cup/config";
-import { auditStatement, rolesOf } from "../../src/console/access";
+import { auditStatement, codeEnabled, consoleUser, rolesOf } from "../../src/console/access";
 import { openWallet, forgetEconomyCache } from "../../src/wallet/wallet";
 
 /* Phase 3 (docs/whot-cup-prd.md): the admin console. Passkey unlock (AD-1), cups and publish checks (AD-2, 5.2),
@@ -33,6 +33,82 @@ async function unlock(cookie: string, key: SoftPasskey) {
   expect(lv.status).toBe(200);
   return `${cookie}; ${lv.setCookies.find(c => c.startsWith("__Host-pc_c="))!.split(";")[0]}`;
 }
+
+describe("the temporary console code", () => {
+  const CODE = "test-console-code";
+  const tryCode = (code: string, ip = "198.51.100.1", origin?: string) => call("POST", "/api/console/code", { body: { code }, ip, origin });
+  const asCookie = (r: { setCookies: string[] }) => r.setCookies.find(c => c.startsWith("__Host-pc_c="))!.split(";")[0];
+  const req = (cookie: string) => new Request("https://play.test/api/console/me", { headers: { Cookie: cookie, "CF-Connecting-IP": "198.51.100.9" } });
+  beforeEach(async () => { await E.DB.prepare("DELETE FROM console_code_attempts").run(); });
+
+  it("the right code opens the console as an owner with no player session, on a strict cookie", async () => {
+    expect((await call("GET", "/api/console/me")).json).toMatchObject({ staff: null, codeEnabled: true });
+    expect((await call("GET", "/api/console/cups")).status).toBe(401);
+    const r = await tryCode(CODE);
+    expect(r.status).toBe(200);
+    expect(r.setCookies[0]).toMatch(/^__Host-pc_c=code\..*HttpOnly; Secure; SameSite=Strict; Max-Age=28800/);
+    const cookie = asCookie(r);
+    expect((await call("GET", "/api/console/me", { cookie })).json).toMatchObject({ unlocked: true, staff: { playerId: "console-code", roles: ["owner"] } });
+    const made = await call("POST", "/api/console/cups", { cookie, body: { config: { ...defaultCupConfig(), name: "Code Cup", slug: `code-cup-${Date.now().toString(36)}` } } });
+    expect(made.status).toBe(201);
+    const audit = await call("GET", "/api/console/audit", { cookie });
+    expect(audit.json.entries.some((e: { actor: string; action: string }) => e.actor === "console-code" && e.action === "cup.create")).toBe(true);
+    await call("POST", "/api/console/signout", { cookie, body: {} });
+    expect((await tryCode(CODE)).status).toBe(200);
+  });
+
+  it("a wrong code and a bad origin are refused", async () => {
+    const r = await tryCode("0000");
+    expect([r.status, r.json.error, r.setCookies.length]).toEqual([401, "code-wrong", 0]);
+    expect((await tryCode(CODE, "198.51.100.2", "https://evil.example")).status).toBe(403);
+  });
+
+  it("5 wrong tries lock a network, even for the right code; other networks carry on", async () => {
+    for (let i = 0; i < 5; i++) expect((await tryCode("0000")).status).toBe(401);
+    expect((await tryCode(CODE)).json.error).toBe("code-locked");
+    expect((await tryCode(CODE, "198.51.100.2")).status).toBe(200);
+  });
+
+  it("wrong tries sent together can't pass the limit", async () => {
+    const rs = await Promise.all(Array.from({ length: 12 }, () => tryCode("0000")));
+    expect(rs.filter(r => r.status === 401).length).toBe(5);
+    expect(rs.filter(r => r.status === 429).length).toBe(7);
+  });
+
+  it("30 wrong tries overall lock everyone, and refused tries don't lengthen the lock", async () => {
+    for (let i = 0; i < 30; i++) expect((await tryCode("0000", `198.51.${100 + Math.floor(i / 5)}.1`)).status).toBe(401);
+    expect((await tryCode(CODE, "203.0.113.77")).json.error).toBe("code-locked");
+    expect(await E.DB.prepare("SELECT COUNT(*) AS n FROM console_code_attempts").first("n")).toBe(30);
+  });
+
+  it("a right code doesn't count against the limits", async () => {
+    for (let i = 0; i < 8; i++) expect((await tryCode(CODE)).status).toBe(200);
+    expect(await E.DB.prepare("SELECT COUNT(*) AS n FROM console_code_attempts").first("n")).toBe(0);
+  });
+
+  it("forged, altered and expired cookies fail", async () => {
+    const cookie = asCookie(await tryCode(CODE));
+    const [, exp, sig] = cookie.split("=")[1].split(".");
+    const later = String(Number(exp) + 3_600_000), past = String(Date.now() - 1000);
+    for (const bad of [`code.${exp}.${"0".repeat(64)}`, `code.${later}.${sig}`, `code.${past}.${sig}`, "code.", "code.x.y"]) {
+      expect((await call("GET", "/api/console/cups", { cookie: `__Host-pc_c=${bad}` })).status).toBe(401);
+    }
+    const realNow = Date.now, later9h = realNow() + 9 * 3600_000;
+    Date.now = () => later9h;
+    try { expect(await consoleUser({ ...E, CONSOLE_CODE: CODE } as never, req(cookie))).toBe(null); } finally { Date.now = realNow; }
+  });
+
+  it("changing the secret ends sessions; no secret, or cash on, turns the code off", async () => {
+    const cookie = asCookie(await tryCode(CODE));
+    expect(await consoleUser({ ...E, CONSOLE_CODE: CODE } as never, req(cookie))).toMatchObject({ playerId: "console-code" });
+    expect(await consoleUser({ ...E, CONSOLE_CODE: "another" } as never, req(cookie))).toBe(null);
+    expect(await consoleUser({ ...E, CONSOLE_CODE: "" } as never, req(cookie))).toBe(null);
+    expect(await consoleUser({ ...E, CONSOLE_CODE: CODE, CASH_ENABLED: "1" } as never, req(cookie))).toBe(null);
+    expect(codeEnabled({ ...E, CONSOLE_CODE: "" } as never)).toBe(false);
+    expect(codeEnabled({ ...E, CONSOLE_CODE: CODE, CASH_ENABLED: "1" } as never)).toBe(false);
+    expect(codeEnabled({ ...E, CONSOLE_CODE: CODE, PHONE_HMAC_KEY: "" } as never)).toBe(false);
+  });
+});
 
 describe("unlocking the console", () => {
   it("players who aren't staff get nothing", async () => {
