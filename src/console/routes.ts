@@ -2,8 +2,8 @@ import { fail, json, readJson, sameOrigin, type Json } from "../http";
 import { coerceConfig, configHash, defaultCupConfig, isFrozen, previewCup, publishChecks, validateCupConfig, type CupConfig } from "../cup/config";
 import { DEFAULT_ECONOMY, forgetEconomyCache, type Economy } from "../wallet/wallet";
 import {
-  auditStatement, can, clearConsoleCookie, consoleUser, loginOptions, loginVerify, passkeyCount, registerOptions, registerVerify,
-  rolesOf, ROLES, staffOf, type ConsoleEnv, type ConsoleUser, type Role,
+  auditStatement, can, clearConsoleCookie, CODE_ACTOR, codeEnabled, consoleUser, loginOptions, loginVerify, passkeyCount, registerOptions, registerVerify,
+  rolesOf, ROLES, staffOf, unlockWithCode, type ConsoleEnv, type ConsoleUser, type Role,
 } from "./access";
 
 /* The admin console API (docs/whot-cup-prd.md, Phase 3). Everything is under /api/console/.
@@ -12,6 +12,7 @@ import {
    GET   me                                   who you are, your roles, whether the console is unlocked
    POST  passkey/register/options|verify      add a passkey (the first needs only staff + phone session)
    POST  passkey/login/options|verify         unlock the console for 8 hours
+   POST  code { code }                        unlock with the temporary code, when it is switched on
    POST  signout                              lock it again
 
    Cups (cup-admin)                           Templates (cup-admin)        Settings
@@ -42,9 +43,10 @@ export async function consoleRoute(req: Request, env: ConsoleEnv, path: string):
   // ---------- unlocking ----------
   if (p[0] === "me" && m === "GET") return me(env, req);
   if (p[0] === "passkey") return passkey(env, req, p[1], p[2]);
+  if (p[0] === "code" && m === "POST") return unlockCode(env, req);
   if (p[0] === "signout" && m === "POST") {
     const u = await consoleUser(env, req);
-    if (u) await env.DB.prepare("UPDATE console_sessions SET revoked_at = ? WHERE id = ?").bind(Date.now(), u.sessionId).run();
+    if (u && u.playerId !== CODE_ACTOR) await env.DB.prepare("UPDATE console_sessions SET revoked_at = ? WHERE id = ?").bind(Date.now(), u.sessionId).run();
     return json({ ok: true }, 200, { "Set-Cookie": clearConsoleCookie() });
   }
 
@@ -95,10 +97,21 @@ export async function consoleRoute(req: Request, env: ConsoleEnv, path: string):
 /* ---------- unlocking ---------- */
 
 async function me(env: ConsoleEnv, req: Request): Promise<Response> {
-  const staff = await staffOf(env, req);
-  if (!staff) return json({ staff: null });
-  const u = await consoleUser(env, req);
-  return json({ staff: { playerId: staff.playerId, name: staff.name, roles: staff.roles }, passkeys: await passkeyCount(env, staff.playerId), unlocked: !!u, cashEnabled: env.CASH_ENABLED === "1" });
+  const u = await consoleUser(env, req), useCode = codeEnabled(env);
+  const staff = u?.playerId === CODE_ACTOR ? u : await staffOf(env, req);
+  if (!staff) return json({ staff: null, codeEnabled: useCode });
+  return json({ staff: { playerId: staff.playerId, name: staff.name, roles: staff.roles }, passkeys: u?.playerId === CODE_ACTOR ? 0 : await passkeyCount(env, staff.playerId), unlocked: !!u, cashEnabled: env.CASH_ENABLED === "1", codeEnabled: useCode });
+}
+
+async function unlockCode(env: ConsoleEnv, req: Request): Promise<Response> {
+  if (!codeEnabled(env)) return fail(404, "not-found");
+  const b = await readJson(req);
+  if (!b || typeof b.code !== "string" || !b.code || b.code.length > 32) return fail(400, "bad-request");
+  const r = await unlockWithCode(env, req, b.code.trim());
+  if (r === "locked") return fail(429, "code-locked");
+  if (r === "wrong") return fail(401, "code-wrong");
+  await auditStatement(env, CODE_ACTOR, "console.unlock", "code", undefined, undefined).run();
+  return json({ ok: true }, 200, { "Set-Cookie": r.cookie });
 }
 
 async function passkey(env: ConsoleEnv, req: Request, what: string, step: string): Promise<Response> {
