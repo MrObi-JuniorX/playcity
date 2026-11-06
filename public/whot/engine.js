@@ -34,30 +34,52 @@ export function buildDeck(){
   return d; // 54 cards
 }
 const DECK=buildDeck();
-/* Penalty for same-number cards sitting close together (neighbours cost most). */
-function spreadCost(a){
-  let c=0;
-  for(let i=0;i<a.length;i++)
-    for(let d=1;d<=3&&i+d<a.length;d++)
-      if(a[i].n===a[i+d].n) c+=d===1?12:d===2?3:1;
-  return c;
+
+/* ---------------- shuffling ----------------
+   Two promises, each exact rather than approximate:
+   1. The hands are dealt from a uniform shuffle: every order of the 54 cards is equally likely, so what you are dealt
+      does not depend on how many sit at the table or where you sit.
+   2. The market (what is left after the deal, and every reshuffle of played cards) is uniform among the orders in which
+      no two cards of the same number sit side by side, so picking 2 or 3 never hands over a clump like 7, 7, 7.
+      This is rejection sampling: shuffle uniformly, and shuffle again if two neighbours match. Every allowed order
+      stays exactly as likely as every other, which a "nudge the clumps apart" pass cannot promise.
+   (The earlier pass swapped cards until neighbours up to 3 apart differed. Hands are dealt round the table, so one
+   player's cards sit 2, 3 or 4 apart in the deck, and that pass changed hands differently by table size: fewer pairs
+   with 2 or 3 players, more pairs and more double Whots with 4.)
+   Random numbers come from crypto in batches of 256: a whole deal takes a handful of calls, not thousands. */
+const POOL=new Uint32Array(256); let poolAt=POOL.length;
+const hasCrypto=()=>typeof crypto!=='undefined'&&!!crypto.getRandomValues;
+/* A uniform integer in [0, n), unbiased (values past the last whole multiple of n are drawn again). */
+function below(n){
+  if(!hasCrypto()) return rand(n);
+  const lim=Math.floor(4294967296/n)*n; let x;
+  do{ if(poolAt>=POOL.length){crypto.getRandomValues(POOL); poolAt=0;} x=POOL[poolAt++]; }while(x>=lim);
+  return x%n;
 }
-/* Random swaps, kept only when they don't make clustering worse. */
-function spreadNumbers(a){
-  let cost=spreadCost(a);
-  for(let t=0;t<2500&&cost>0;t++){
-    const i=rand(a.length), j=rand(a.length);
-    if(i===j||a[i].n===a[j].n) continue;
-    let x=a[i]; a[i]=a[j]; a[j]=x;
-    const nc=spreadCost(a);
-    if(nc<=cost) cost=nc; else {x=a[i]; a[i]=a[j]; a[j]=x;}
-  }
+/* Fisher-Yates: uniform over every order. */
+function shuffleUniform(a){
+  for(let i=a.length-1;i>0;i--){const j=below(i+1); const t=a[i]; a[i]=a[j]; a[j]=t;}
   return a;
 }
-/* Unbiased Fisher-Yates with a crypto random source, then pull same-number cards apart. */
-function shuffle(a){
-  for(let i=a.length-1;i>0;i--){const j=rand(i+1); const t=a[i]; a[i]=a[j]; a[j]=t;}
-  return spreadNumbers(a);
+/* Same-number neighbours, counting the seam with `after` (the card that will sit just past the end of a). */
+export function clumps(a,after){
+  let c=0;
+  for(let i=1;i<a.length;i++) if(a[i].n===a[i-1].n) c++;
+  if(after&&a.length&&a[a.length-1].n===after.n) c++;
+  return c;
+}
+const MARKET_TRIES=2000;   // a market of 33 to 43 cards passes about 1 try in 8 to 1 in 20: this cap is never reached when an order exists
+/* Uniform among orders with no same-number neighbours. Should no such order exist (a pile of three 2s and one 7),
+   the order with the fewest is kept. */
+export function shuffleMarket(a,after){
+  let best=null, bc=Infinity;
+  for(let t=0;t<MARKET_TRIES;t++){
+    shuffleUniform(a);
+    const c=clumps(a,after);
+    if(c===0) return a;
+    if(c<bc){bc=c; best=a.slice();}
+  }
+  return best;
 }
 export function cardText(c){return c.n===20?'Whot':SYMCH[c.shape]+' '+c.n;}
 /* Verb agreement for a player's name: offline the person at the screen is called "You" ("You play", not "You plays"). */
@@ -68,19 +90,18 @@ export function newGame(seats,starter){
   const n=seats.length;
   const s={
     players:seats.map(x=>({name:x.name,type:x.type,hand:[]})),
-    market:shuffle(buildDeck()), discard:[], current:starter%n,
+    market:shuffleUniform(buildDeck()), discard:[], current:starter%n,
     shape:null, pending:null, hold:false, checkup:null,
     over:false, winner:null, losers:[], stalemate:false,
     log:[], events:[], passes:0, turns:0, starter:starter%n
   };
   for(let r=0;r<5;r++) for(let i=0;i<n;i++) s.players[(starter+i)%n].hand.push(s.market.pop());
-  const buried=[]; let first=null;
-  while(true){
-    const c=s.market.pop();
-    if(SPECIAL_NUMS.includes(c.n)){buried.push(c); continue;}
-    first=c; break;
-  }
-  s.market.unshift(...buried);
+  // The first card to turn up that is not a special one starts the pile (a uniformly random ordinary card). Specials
+  // turned up on the way go back into the market, which is then shuffled under the no-clumps rule above.
+  let k=s.market.length-1;
+  while(SPECIAL_NUMS.includes(s.market[k].n)) k--;
+  const first=s.market.splice(k,1)[0];
+  s.market=shuffleMarket(s.market);
   s.discard.push(first); s.shape=first.shape;
   say(s,s.players[s.current].name+' '+vb(s.players[s.current].name,'starts','start')+'.');
   return s;
@@ -99,7 +120,7 @@ export function playableCards(s,i){
 function refill(s){
   if(s.discard.length<=1) return false;
   const t=s.discard.pop(); const rest=s.discard;
-  s.discard=[t]; s.market=shuffle(rest).concat(s.market);
+  s.discard=[t]; s.market=shuffleMarket(rest,s.market[0]).concat(s.market);   // no clump at the seam either
   s.events.push({type:'reshuffle',moved:rest.length});
   say(s,'Market is low. Played cards were shuffled back in.');
   return true;

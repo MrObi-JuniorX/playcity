@@ -34,7 +34,7 @@ Source reviewed: `~/Downloads/Flick Football (2).html` (a single 170 KB file). I
 - **Quick match**: joins whoever has waited longest. If nobody is waiting, you play the computer straight away and are listed, so the next person looking drops into your game.
 - **Open to challengers**: while playing the computer, let strangers take over the computer's side.
 
-**Midstream takeover.** When a knock is accepted during a match against the computer, the host sends the exact match state (score, clock, positions, cards, whose turn). The guest takes over the computer's team and play continues where it was. If either player leaves, closes the tab, or their device sleeps for 15 seconds, the computer takes their side again. No match is ever abandoned.
+**Midstream takeover.** When a knock is accepted during a match against the computer, the host sends the exact match state (score, clock, positions, cards, whose turn). The guest takes over the computer's team and play continues where it was. If either player leaves, closes the tab, or goes silent for 10 seconds, the computer takes their side again. No match is ever abandoned. A player who only lost their connection is let back in when it returns (see "Poor networks" below).
 
 **Zero felt latency: rollback netcode** (`rollback.js`).
 - Both browsers run the same deterministic match at 60 ticks a second.
@@ -140,7 +140,7 @@ Anyone can watch a live table, and each watcher turns, tilts and zooms the table
 - **Trust**: peers trust each other's inputs. That is fine for casual play with no saved scores. A ranked mode would need the room to verify inputs.
 - **3D in the test pane**: the browser pane used for testing has no WebGL, so testing used the game's 2D fallback. The 3D view uses the same code path (the flip is applied to both).
 - **Lobby** is a single Durable Object. Shard it by game or region (`getByName("flick:eu")`) once thousands wait at the same moment.
-- **Signaling drop**: if the room's server restarts mid-match (a deploy), players on a direct link play on. Only a closed data channel, a goodbye, or 15 s of silence ends the match.
+- **Signaling drop**: if the room's server restarts mid-match (a deploy), players on a direct link play on. Only a closed data channel, a goodbye, or 10 s of silence ends the match.
 - Delete the dead loft physics (`ballDisc`, `ballCap`, hidden Loft slider) if loft isn't coming back.
 
 ## Finding games, spectators and the walkie-talkie (2026-10-10)
@@ -218,3 +218,24 @@ Following map and 3D-viewer conventions:
 
   A full pull already reached the far keeper, and still does. The computer's aim reads the same constant, so it adjusts by itself.
 - **View tips at the start of a match**: rotate (twist two fingers), move (swipe two fingers), zoom (pinch), with small animated fingers; drag and wheel on a mouse. Shown for about three seconds when you kick off, join someone or start watching. It never takes a tap, and touching the table hides it at once.
+
+## Poor networks: getting back into the match
+
+**Before:** a guest whose connection died (a tunnel, weak signal, a phone that slept) lost their side for good. Both screens gave it to the computer, and nothing ever reconnected them; they had to open the link again and wait out the host's 4-second count. Two more problems made it worse:
+- The silence limit counted frames, not seconds: each stalled frame added 1/60 s, so "15 s" was 15 s only at 60 fps. It was 30 s in a headless browser and about 45 s on a struggling phone at 20 fps, with the other player staring at a frozen match.
+- A guest whose old socket was still half-open in the room (common after losing signal) was turned away as `busy` on the way back.
+
+**Now:**
+- **Silence is wall time.** `rollback.js` adds the real time a stalled frame took. The match hands the silent side to the computer after 10 s (`STALL_GIVE_UP`), lower than before because coming back is now cheap.
+- **A drop is not a goodbye.** A side that detects the drop sends `{t:'bye', drop:true}`, and the screen says "lost connection" instead of "left". A real goodbye (Leave, closing the tab) and a host's deliberate close (4001) still end it for good.
+- **Rejoin token.** Each guest tab keeps a random token per code (`rj`, in session storage) and sends it with every knock. The room passes it to the host with the knock, and replays it when the host reconnects.
+- **The host remembers.** For 2 minutes after a dropped (not departed) guest, a knock with the same token while the computer still holds that side is accepted at once, with no countdown. The host sends the match as it stands on its screen ("You are back").
+- **The guest keeps knocking.** It keeps playing the computer meanwhile, and does not open itself to challengers. It knocks again with backoff (1 s doubling to 15 s, with jitter) for up to 2 minutes, at once when the network or the tab comes back. An attempt that hangs while connecting is dropped after 8 s. If the host has left, declined, or is playing someone else, it stops and says so.
+- **The room replaces the stale guest.** A new connection with the same token closes the old one (4011) and tells the host `peer-left` before forwarding the new knock, exactly as `hid` does for the host.
+- **Tested:**
+  - `test/worker/rooms.test.ts` covers the token on knocks (and dropping a malformed one), its replay after the host reconnects, and replacement of a half-open guest in the right order.
+  - In the browser, behind a proxy that black-holes the guest's traffic without closing the socket (forcing the relay path):
+    - Both screens hand the side to the computer after about 11 s.
+    - When the network is back, the guest is in the match on its old side about 1.1 s later.
+    - Both screens show the same score, with ticks advancing together.
+

@@ -12,10 +12,22 @@ import type { Game, WhotEvent } from "../public/whot/engine.js";
    needs the table's say-so: someone with the invite link (it carries the table's key) sits at once, and anyone else
    asks. The request waits in their own connection's attachment (so the table stays storage-free for it), every
    seated person is told, any of them can accept or decline, and with no answer it is accepted after ASK_MS so an
-   idle player cannot block a table. With nobody seated there is no one to ask, so it is accepted at once. A player
-   who leaves or loses connection hands their seat straight back to the computer, and the same browser reclaims it
-   on reconnect if nobody else has. A player who sits idle past the turn clock has a move made for them, and after
-   two in a row their seat goes back to the computer.
+   idle player cannot block a table. With nobody seated there is no one to ask, so it is accepted at once.
+
+   Leaving and losing the connection are different things, and a poor network should cost as little as possible:
+   - Leaving on purpose (Leave, or Watch instead, which send "stand") hands the seat to the computer at once, under
+     the computer's name, with no claim kept.
+   - Losing the connection (a tunnel, a weak signal, a reload, a phone switching apps) HOLDS the seat for HOLD_MS: the
+     seat keeps the person's name and is shown as reconnecting, nobody else can take it, and the computer covers
+     their turns. The first of their turns while they are away waits GRACE_MS for them first. The same browser
+     (the id kept in its storage) takes the seat back the moment it reconnects, without asking anyone. After HOLD_MS
+     the seat takes the computer's name, but the claim stays: it is still theirs on return unless someone else sat.
+   - A connection that has gone quiet (no ping for STALE_MS: a phone that lost signal often leaves a socket that
+     never says it closed) is treated as lost, not as a player ignoring the clock, so it never costs them strikes.
+   - Reconnecting while the table still thinks the old connection is open replaces that connection at once: the new
+     one takes the seat, the old one is closed (4011), and nobody sees a thing.
+   A player who is connected but sits idle past the turn clock has a move made for them, and after two in a row their
+   seat goes back to the computer; they are asked before taking it back.
 
    Cost: the table hibernates between messages. Because hibernation drops memory, the table keeps ONE small row
    (the game, about 5 KB) in its SQLite storage, rewritten once per human move. Computer turns run at once in the
@@ -25,7 +37,13 @@ import type { Game, WhotEvent } from "../public/whot/engine.js";
    within seconds) to come back to their table, and for the friend's link to still find it. */
 
 interface Ask { seat: number; until: number; rid: string }   // seat -1: any open seat; rid is public, the connection id is not
-interface Seat { cpuName: string; id: string | null; prev: string | null; strikes: number; prevName?: string; away?: boolean }   // prev: who sat here last; prevName: the name they had; away: they stopped answering (so no automatic seat back)
+interface Seat {
+  cpuName: string; id: string | null; prev: string | null; strikes: number;
+  prevName?: string;   // the name they had
+  away?: boolean;      // they stopped answering while connected (so no automatic seat back)
+  hold?: number;       // lost connection: the seat is kept for them, under their name, until this time
+  wait?: boolean;      // lost connection: their next turn waits GRACE_MS for them, once
+}   // prev: who sat here last
 interface Gone { orig: number; seat: Seat; name: string; tally: { w: number; l: number } }   // knocked out of a tournament: kept to bring back
 interface Table {
   g: Game; seats: Seat[]; listed: boolean; key: string; tally: { w: number; l: number }[];
@@ -43,7 +61,9 @@ const PACE_MS = 1_200;        // browsers show each computer turn for about this
 const ANIM_MS = 1_500;        // allowance for the animation of the move before yours
 const EMPTY_MS = 600_000;     // keep an empty table this long, for a reload, a dropped connection or a host away sending the link
 const STRIKES = 2;            // turns timed out in a row before the seat goes back to the computer
-const GRACE_MS = 10_000;      // a player who drops on their own turn gets this long to come back before the computer moves
+const GRACE_MS = 15_000;      // a dropped player's next turn waits this long for them before the computer moves
+const HOLD_MS = 60_000;       // a dropped player's seat is kept for them, under their name, this long
+const STALE_MS = 40_000;      // no ping for this long: the connection is gone, whatever the socket says (browsers ping every 10 s; older ones 25 s)
 const ASK_MS = 15_000;        // a seat request is accepted on its own after this, unless someone declines
 const ASK_COOLDOWN_MS = 30_000; // after a "not now", the same person waits this long to ask again
 const MAX_ASKS = 4;           // requests waiting at once
@@ -90,13 +110,19 @@ export class WhotTable extends DurableObject<Env> {
     else {
       const tb = t as Table;
       tb.emptyAt = 0;
+      const now = Date.now();
+      this.sweep(tb, now, server);
       this.reconcile(tb);
+      this.expire(tb, now);
       const k = url.searchParams.get("k") || "";
       conn.trusted = k.length > 0 && k === tb.key;                 // arrived by the invite link
       server.serializeAttachment(conn);
+      // Back after a dropped connection the table had not noticed yet: this connection replaces the old one.
+      const old = this.open().find(w => { const c = w.deserializeAttachment() as Conn; return w !== server && c.id === conn.id && c.seat !== null; });
       // Back after a reload or a dropped connection: take your seat again if the computer still has it.
       const mine = tb.seats.findIndex(s => s.id === null && s.prev === conn.id && !s.away);
-      if (mine >= 0) this.take(tb, mine, server, conn);
+      if (old) this.replace(tb, old, server, conn);
+      else if (mine >= 0) this.take(tb, mine, server, conn);
       else if (url.searchParams.get("sit") === "1") this.requestSeat(tb, server, conn, -1);   // sits at once, or asks
       this.settleAsks(tb, Date.now());
       const steps: Captured[] = [];
@@ -127,7 +153,9 @@ export class WhotTable extends DurableObject<Env> {
     // Walkie-talkie signalling: passed straight through between SEATED people only. Watchers can neither send
     // nor receive it, so they are never connected to anyone's microphone. No state changes, nothing stored.
     if (m.t === "rtc" || m.t === "talk") return this.voice(t, ws, conn, m);
+    this.sweep(t, Date.now(), ws);
     this.reconcile(t);
+    this.expire(t, Date.now());
     this.settleAsks(t, Date.now());
     const g = t.g, seat = (ws.deserializeAttachment() as Conn).seat;
     const steps: Captured[] = [];
@@ -170,9 +198,9 @@ export class WhotTable extends DurableObject<Env> {
         }
         break;
       }
-      case "stand": {
+      case "stand": {   // leaving on purpose: no hold, no claim
         if (seat === null) return;
-        this.release(t, seat, "stood up", false);
+        this.release(t, seat, "stood up", "gone");
         t.seats[seat].prev = null;
         ws.serializeAttachment({ ...(ws.deserializeAttachment() as Conn), seat: null });   // this connection watches now
         break;
@@ -216,7 +244,9 @@ export class WhotTable extends DurableObject<Env> {
       if (t.emptyAt && now >= t.emptyAt - 500) { await this.ctx.storage.deleteAll(); this.t = null; return; }
       return this.schedule(t);
     }
+    this.sweep(t, now);          // a silent connection is a lost one, not an idle player: no strikes for it
     this.reconcile(t);
+    this.expire(t, now);
     this.settleAsks(t, now);
     const g = t.g, steps: Captured[] = [];
     if (t.grace && now >= t.grace.until - 250) t.grace = null;      // not back in time: the computer plays on
@@ -228,7 +258,7 @@ export class WhotTable extends DurableObject<Env> {
       steps.push(this.capture(t, "auto", i, false));
       if (++seat.strikes >= STRIKES && t.seats[i].id) {
         const ws = this.open().find(w => (w.deserializeAttachment() as Conn).seat === i);
-        this.release(t, i, "is away", false);
+        this.release(t, i, "is away", "gone");
         seat.away = true;       // the seat stays theirs to take back, but only when they say so (they are asked when they return)
         if (ws) ws.serializeAttachment({ ...(ws.deserializeAttachment() as Conn), seat: null });
       }
@@ -291,7 +321,7 @@ export class WhotTable extends DurableObject<Env> {
     t.seats.forEach((seat, i) => {
       if (drop.includes(i)) {
         // Out. A person's connection stays open and watches; their seat id is kept so they get it back with the field.
-        t.out.push({ orig: t.ord[i], seat: { ...seat, prev: seat.id ?? seat.prev, id: null, strikes: 0 }, name: g.players[i].name, tally: t.tally[i] });
+        t.out.push({ orig: t.ord[i], seat: { ...seat, prev: seat.id ?? seat.prev, id: null, strikes: 0, hold: undefined, wait: undefined }, name: g.players[i].name, tally: t.tally[i] });
       } else rows.push({ orig: t.ord[i], seat, name: g.players[i].name, type: g.players[i].type, tally: t.tally[i], old: i });
     });
     const back: Row[] = [];
@@ -359,10 +389,11 @@ export class WhotTable extends DurableObject<Env> {
 
   /* Sit at once (the invite link, or nobody here to ask), or put a request on this connection. Returns why not. */
   private requestSeat(t: Table, ws: WebSocket, conn: Conn, want: number): string | null {
-    const free = want >= 0 ? (t.seats[want]?.id === null ? want : -1) : this.freeSeat(t);
-    if (free < 0) return "seat-taken";
     const own = t.seats.findIndex(s => s.id === null && s.prev === conn.id);      // your own seat, left a while ago: no need to ask anyone
     if (own >= 0 && (want < 0 || want === own)) { this.take(t, own, ws, conn); return null; }
+    if (want >= 0 && t.seats[want] && this.held(t.seats[want], Date.now())) return "seat-held";   // kept for someone reconnecting
+    const free = want >= 0 ? (t.seats[want]?.id === null ? want : -1) : this.freeSeat(t);
+    if (free < 0) return "seat-taken";
     if (conn.trusted || !t.seats.some(s => s.id)) { this.take(t, free, ws, conn); return null; }
     if ((this.denied.get(conn.id) ?? 0) > Date.now()) return "cooldown";
     if (this.asks().length >= MAX_ASKS) return "busy";
@@ -379,17 +410,20 @@ export class WhotTable extends DurableObject<Env> {
   /* Seat the requested (else first open) seat for someone whose request was accepted. */
   private grant(t: Table, w: WebSocket, c: Conn) {
     const want = c.ask!.seat;
-    const i = want >= 0 && t.seats[want]?.id === null ? want : this.freeSeat(t);
+    const i = want >= 0 && t.seats[want]?.id === null && !this.held(t.seats[want], Date.now()) ? want : this.freeSeat(t);
     if (i < 0) { w.serializeAttachment({ ...c, ask: null }); this.send(w, { t: "denied", reason: "full" }); return; }
     this.take(t, i, w, c);
   }
 
   /* A computer seat for someone who asked for any seat. Seats nobody has a claim on come first, so a friend arriving
-     by link while the host is away (sending that link) gets a computer's cards, not the host's own seat. */
+     by link while the host is away (sending that link) gets a computer's cards, not the host's own seat. A seat held
+     for someone reconnecting is never handed out. */
   private freeSeat(t: Table): number {
+    const now = Date.now();
     const fresh = t.seats.findIndex(s => s.id === null && !s.prev);
-    return fresh >= 0 ? fresh : t.seats.findIndex(s => s.id === null);
+    return fresh >= 0 ? fresh : t.seats.findIndex(s => s.id === null && !this.held(s, now));
   }
+  private held(s: Seat, now: number): boolean { return s.id === null && !!s.hold && s.hold > now; }
 
   /* Accept requests nobody answered in time, and all of them when nobody is left to answer. */
   private settleAsks(t: Table, now: number) {
@@ -405,15 +439,57 @@ export class WhotTable extends DurableObject<Env> {
     t.seats.forEach((s, i) => { if (s.id && !held.has(`${i}:${s.id}`)) this.release(t, i, "lost connection"); });
   }
 
+  /* When this connection was last heard from: it opened, or the runtime answered its ping (pings never wake the table). */
+  private heard(ws: WebSocket): number {
+    const c = ws.deserializeAttachment() as Conn;
+    return Math.max(c.at, this.ctx.getWebSocketAutoResponseTimestamp(ws)?.getTime() ?? 0);
+  }
+
+  /* Seated connections that have gone quiet are lost connections: close them and hold the seat. They have been gone
+     for STALE_MS already, so their turn does not wait for them as well. `except`: the connection that just spoke. */
+  private sweep(t: Table, now: number, except?: WebSocket) {
+    for (const w of this.open()) {
+      const c = w.deserializeAttachment() as Conn;
+      if (w === except || c.seat === null || now - this.heard(w) < STALE_MS) continue;
+      const i = c.seat;
+      w.serializeAttachment({ ...c, seat: null });
+      try { w.close(4008, "stale"); } catch { /* already gone */ }
+      if (t.seats[i]?.id === c.id) { this.release(t, i, "lost connection"); t.seats[i].wait = false; }
+    }
+  }
+
+  /* The same browser is back on a new connection while the old one still looks open: hand the seat across quietly. */
+  private replace(t: Table, old: WebSocket, ws: WebSocket, conn: Conn) {
+    const c = old.deserializeAttachment() as Conn;
+    old.serializeAttachment({ ...c, seat: null, ask: null });
+    try { old.close(4011, "replaced"); } catch { /* already gone */ }
+    if (c.seat !== null && t.seats[c.seat]?.id === conn.id) {
+      ws.serializeAttachment({ ...conn, seat: c.seat, ask: null });
+      t.seats[c.seat].strikes = 0;
+    }
+  }
+
+  /* Held seats whose person did not come back in time take the computer's name. The claim stays (prev). */
+  private expire(t: Table, now: number) {
+    t.seats.forEach((s, i) => {
+      if (!s.hold || s.hold > now) return;
+      delete s.hold; delete s.wait;
+      if (s.id !== null) return;
+      const p = t.g.players[i], who = p.name;
+      p.name = this.freeName(t, i, s.cpuName);
+      if (!t.g.over) W.say(t.g, who + " has not come back yet, so " + p.name + " plays on in their seat.", "warn");
+    });
+  }
+
   private take(t: Table, i: number, ws: WebSocket, conn: Conn) {
     const s = t.seats[i], p = t.g.players[i], was = p.name;
     const back = s.prev === conn.id;
     // the same person in a second tab: move them, the old tab becomes a watcher
     for (const w of this.open()) {
       const c = w.deserializeAttachment() as Conn;
-      if (w !== ws && c.id === conn.id && c.seat !== null) { this.release(t, c.seat, "moved"); t.seats[c.seat].prev = null; w.serializeAttachment({ ...c, seat: null }); }
+      if (w !== ws && c.id === conn.id && c.seat !== null) { this.release(t, c.seat, "moved", "gone"); t.seats[c.seat].prev = null; w.serializeAttachment({ ...c, seat: null }); }
     }
-    s.id = conn.id; s.prev = null; s.strikes = 0; delete s.prevName; delete s.away;
+    s.id = conn.id; s.prev = null; s.strikes = 0; delete s.prevName; delete s.away; delete s.hold; delete s.wait;
     if (t.grace?.seat === i) t.grace = null;
     p.type = "human";
     p.name = this.freeName(t, i, conn.name);
@@ -421,18 +497,23 @@ export class WhotTable extends DurableObject<Env> {
     W.say(t.g, back ? p.name + " is back." : p.name + " took " + was + "'s seat.", "ok");
   }
 
-  private release(t: Table, i: number, why: string, grace = true) {
+  /* The computer takes over a seat. "drop": the connection was lost, so the seat is held for them under their name
+     and their next turn waits a little (see drive). "gone": they left or stopped answering, so the computer sits down. */
+  private release(t: Table, i: number, why: string, how: "drop" | "gone" = "drop") {
     const s = t.seats[i], p = t.g.players[i];
     if (!s.id) return;
     const who = p.name;
     s.prev = s.id; s.id = null; s.strikes = 0; s.prevName = who;
     p.type = "cpu";
+    if (how === "drop") {
+      s.hold = Date.now() + HOLD_MS; s.wait = !t.g.over;
+      if (!t.g.over) W.say(t.g, who + " " + why + ". Their seat is kept for them.", "warn");
+      return;
+    }
+    delete s.hold; delete s.wait;
+    if (t.grace?.seat === i) t.grace = null;
     p.name = this.freeName(t, i, s.cpuName);
-    // Dropped on your own turn (a reload, a tunnel, a phone call): the turn waits a moment for you.
-    if (grace && !t.g.over && t.g.current === i && t.seats.some(x => x.id)) {
-      t.grace = { seat: i, until: Date.now() + GRACE_MS, name: who };
-      W.say(t.g, who + " " + why + ". Holding their turn for a few seconds.", "warn");
-    } else if (!t.g.over) W.say(t.g, who + " " + why + ". " + p.name + " plays their cards.", "warn");
+    if (!t.g.over) W.say(t.g, who + " " + why + ". " + p.name + " plays their cards.", "warn");
   }
 
   /* A name nobody else at the table is using: Ada, then Ada 2, Ada 3. */
@@ -445,11 +526,18 @@ export class WhotTable extends DurableObject<Env> {
 
   /* Computer turns, played at once while at least one person is seated. With nobody seated the table waits. */
   private drive(t: Table, steps: Captured[]) {
-    const g = t.g;
+    const g = t.g, now = Date.now();
     let guard = 0;
-    if (t.grace && (Date.now() >= t.grace.until || t.grace.seat !== g.current || g.over)) t.grace = null;
+    if (t.grace && (now >= t.grace.until || t.grace.seat !== g.current || g.over)) t.grace = null;
     while (!g.over && g.players[g.current].type === "cpu" && t.seats.some(s => s.id) && !t.grace && guard++ < 400) {
-      const actor = g.current;
+      const actor = g.current, s = t.seats[actor];
+      // Someone who lost their connection: their turn waits a few seconds for them, once, before the computer covers it.
+      if (s.wait && this.held(s, now)) {
+        s.wait = false;
+        t.grace = { seat: actor, until: now + GRACE_MS, name: g.players[actor].name };
+        W.say(g, "Holding " + g.players[actor].name + "'s turn for a few seconds.", "warn");
+        break;
+      }
       g.events = [];
       W.applyMove(g, W.aiMoveFair(g));
       steps.push(this.capture(t, "cpu", actor, true));
@@ -502,7 +590,7 @@ export class WhotTable extends DurableObject<Env> {
 
   private meta(t: Table, c: Conn, lister: number | null, watching: number, now: number, asks: { c: Conn }[], group: { vid: string; name: string; seat: number | null }[], owner: boolean) {
     const base = JSON.stringify({
-      you: c.seat, seats: t.seats.map((s, i) => ({ name: t.g.players[i].name, human: !!s.id, me: s.id === c.id })),
+      you: c.seat, seats: t.seats.map((s, i) => ({ name: t.g.players[i].name, human: !!s.id, me: s.id === c.id, ...(this.held(s, now) ? { held: s.hold! - now } : {}) })),
       listed: t.listed, lister: c.seat !== null && c.seat === lister, tally: t.tally, round: t.round, watching, out: t.out.map(o => o.name),
       grace: t.grace ? { seat: t.grace.seat, name: t.grace.name, left: Math.max(0, t.grace.until - now) } : null,
       // Only seated people see who is asking (by a public request id) and the invite key. Watchers see neither.
@@ -525,7 +613,8 @@ export class WhotTable extends DurableObject<Env> {
   }
 
   private async schedule(t: Table) {
-    const times = [t.dl, t.grace?.until ?? 0, !this.open().length ? t.emptyAt : 0, ...this.asks().map(a => a.c.ask!.until)].filter(x => x > 0);
+    const someone = this.open().length > 0;
+    const times = [t.dl, t.grace?.until ?? 0, !someone ? t.emptyAt : 0, ...(someone ? t.seats.map(s => s.hold ?? 0) : []), ...this.asks().map(a => a.c.ask!.until)].filter(x => x > 0);
     if (times.length) await this.ctx.storage.setAlarm(Math.min(...times));
     else await this.ctx.storage.deleteAlarm();
   }
@@ -534,7 +623,7 @@ export class WhotTable extends DurableObject<Env> {
     const t = this.load();
     if (!t) return;
     const c = ws.deserializeAttachment() as Conn;
-    if (c.seat !== null && t.seats[c.seat]?.id === c.id) this.release(t, c.seat, "left");
+    if (c.seat !== null && t.seats[c.seat]?.id === c.id) this.release(t, c.seat, "lost connection");   // a deliberate leave sends "stand" first
     if (!this.open().length) t.emptyAt = Date.now() + EMPTY_MS;
     this.settleAsks(t, Date.now());
     const steps: Captured[] = [];

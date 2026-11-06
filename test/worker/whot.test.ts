@@ -420,6 +420,108 @@ describe("whot table", () => {
   });
 });
 
+describe("poor networks: dropped connections keep their seat", () => {
+  /* Ada and Sam (by link) at a 3-seat table, with Ada to play. */
+  async function pair(code: string) {
+    const ada = await create(code);
+    await ada.myTurn();
+    const sam = await open(`/ws/whot/${code}?name=Sam&id=sam-${code}-id&sit=1&k=` + ada.last().invite);
+    await sam.until(() => sam.last()?.you === 1);
+    return { ada, sam };
+  }
+
+  it("holds a dropped player's seat under their name, keeps it from others, and waits once on their next turn", async () => {
+    const { ada, sam } = await pair("NHLDA");
+    await ada.until(() => ada.last().v.current === 0 && ada.last().seats[1].human);
+    sam.ws.close(4000, "tunnel");                                         // dropped on Ada's turn, not his own
+    await ada.until(() => ada.last().seats[1].human === false);
+    expect(ada.last().seats[1].name).toBe("Sam");                       // still his seat, shown as reconnecting
+    expect(ada.last().seats[1].held).toBeGreaterThan(50_000);
+    // Nobody else can take it meanwhile: not a stranger asking for it, and not a friend with the link
+    const eve = await open("/ws/whot/NHLDA?name=Eve&id=stranger-hold-1");
+    await eve.until(() => !!eve.last());
+    eve.send({ t: "sit", seat: 1 });
+    expect((await eve.next("nope")).reason).toBe("seat-held");
+    const fay = await open("/ws/whot/NHLDA?name=Fay&id=friend-hold-01&sit=1&k=" + ada.last().invite);
+    await fay.until(() => fay.last()?.you != null);
+    expect(fay.last().you).toBe(2);                                     // the open computer seat instead
+    // Ada moves; Sam's turn waits for him rather than the computer playing it at once
+    const m = ada.last();
+    if (m.v.current !== 0 || m.v.over) return;                          // a random deal can end the round here
+    ada.send({ t: "market", turn: m.v.turns });
+    await ada.until(() => ada.last().grace?.seat === 1);
+    const turns = ada.last().v.turns;
+    expect(ada.last().v.current).toBe(1);
+    // He is back within the grace: the seat and the turn are his, untouched
+    const back = await open("/ws/whot/NHLDA?name=Sam&id=sam-NHLDA-id");
+    await back.until(() => back.last()?.you === 1);
+    expect(back.last().grace).toBe(null);
+    expect(back.last().v.turns).toBe(turns);
+    expect(back.last().seats[1]).toMatchObject({ human: true, me: true, name: "Sam" });
+    expect(back.last().seats[1].held).toBeUndefined();
+  });
+
+  it("after the hold the computer takes the seat's name, and the seat is still theirs when they return", async () => {
+    const { ada, sam } = await pair("NHLDB");
+    sam.ws.close(4000, "gone quiet");
+    await ada.until(() => ada.last().seats[1].held > 0);
+    await peek(table("NHLDB"), async inst => { inst.t.seats[1].hold = Date.now() - 1; inst.t.seats[1].wait = false; });
+    const n = ada.got.length;
+    await runDurableObjectAlarm(table("NHLDB"));
+    await ada.until(() => ada.got.length > n && ada.last().seats[1].held === undefined);
+    expect(ada.last().v.players[1].name).toBe("Computer");
+    const back = await open("/ws/whot/NHLDB?name=Sam&id=sam-NHLDB-id");
+    await back.until(() => back.last()?.you === 1);                      // no asking: it was his
+  });
+
+  it("someone reconnecting before the table noticed the drop takes over their own seat at once", async () => {
+    const { ada, sam } = await pair("NRPLA");
+    const again = await open("/ws/whot/NRPLA?name=Sam&id=sam-NRPLA-id");   // the old socket still looks open here
+    await again.until(() => again.last()?.you === 1);
+    await sam.until(() => sam.closed() !== null);
+    expect(sam.closed()!.code).toBe(4011);
+    expect(ada.last().seats[1].human).toBe(true);
+    expect(ada.got.every((m: any) => !m.seats || m.seats[1].human || m.seats[1].name !== "Sam")).toBe(true);   // never seen to drop
+    expect(ada.last().v.log.some((l: any) => /lost connection|is back/.test(l.msg))).toBe(false);
+    expect(again.last().watching).toBe(0);
+  });
+
+  it("a connection that went silent is a lost connection at the turn clock: no strike, seat held, back on return", async () => {
+    const { ada, sam } = await pair("NSTLA");
+    // Ada plays her turns at once; Sam's phone has lost signal and never answers
+    ada.ws.addEventListener("message", e => { const m = JSON.parse(String(e.data)); if (m.v && !m.v.over && m.v.current === 0 && m.you === 0) ada.send({ t: "market", turn: m.v.turns }); });
+    const first = ada.last(); if (first.v.current === 0 && !first.v.over) ada.send({ t: "market", turn: first.v.turns });
+    const m = await sam.myTurn();
+    if (m.v.over) return;
+    await peek(table("NSTLA"), async (inst: any) => {
+      inst.t.dl = Date.now() - 1000;
+      for (const w of inst.ctx.getWebSockets()) { const c = w.deserializeAttachment(); if (c?.id === "sam-NSTLA-id") w.serializeAttachment({ ...c, at: Date.now() - 60_000 }); }
+    });
+    const n = ada.got.length;
+    await runDurableObjectAlarm(table("NSTLA"));
+    await ada.until(() => ada.got.slice(n).some(x => x.kind === "cpu" && x.actor === 1));   // covered by the computer, no wait
+    expect(ada.got.slice(n).some(x => x.kind === "auto")).toBe(false);                      // not "ran out of time"
+    expect(ada.last().seats[1]).toMatchObject({ name: ada.last().v.over ? ada.last().seats[1].name : "Sam", human: false });
+    await sam.until(() => sam.closed() !== null);
+    expect(sam.closed()!.code).toBe(4008);
+    const state = await peek(table("NSTLA"), async (inst: any) => ({ strikes: inst.t.seats[1].strikes, away: !!inst.t.seats[1].away }));
+    expect(state).toEqual({ strikes: 0, away: false });
+    const back = await open("/ws/whot/NSTLA?name=Sam&id=sam-NSTLA-id");
+    await back.until(() => back.last()?.you === 1);
+  });
+
+  it("leaving on purpose keeps nothing: the computer sits down under its own name at once", async () => {
+    const { ada, sam } = await pair("NLVEA");
+    sam.send({ t: "stand" });
+    await ada.until(() => ada.last().seats[1].human === false);
+    expect(ada.last().seats[1].held).toBeUndefined();
+    expect(ada.last().v.players[1].name).toBe("Computer");
+    const eve = await open("/ws/whot/NLVEA?name=Eve&id=friend-leave-1&sit=1&k=" + ada.last().invite);
+    await eve.until(() => eve.last()?.you != null);
+    expect(eve.last().you).toBe(1);                                      // free for the next person
+  });
+});
+
 describe("knock-out rounds", () => {
   /* Three people at a three-seat table: Ada (0), Sam (1), Eve (2). */
   async function three(code: string) {

@@ -799,8 +799,14 @@ function setOpen(on) {
 function onKnock(m) {
   // No side for them: already playing someone, someone else is joining, or two people share this screen. They watch.
   if (net.session || net.knock || net.watch || (mode === 'play' && cpuTeam() < 0)) { net.room.decline(m.gid, true); return; }
+  // The opponent who dropped, back (same tab token): straight back in on their old side, no countdown.
+  const lg = net.lastGuest;
+  if (lg && m.rj && m.rj === lg.rj && Date.now() < lg.until && mode === 'play' && cpuTeam() === lg.team) {
+    net.knock = { gid: m.gid, name: m.name, rj: m.rj, timer: null, back: true };
+    acceptKnock(); return;
+  }
   let n = 4;
-  net.knock = { gid: m.gid, name: m.name, timer: null };
+  net.knock = { gid: m.gid, name: m.name, rj: m.rj, timer: null };
   const tick = () => {
     if (!net.knock || net.knock.gid !== m.gid) return;
     if (n <= 0) { acceptKnock(); return; }
@@ -814,22 +820,24 @@ function acceptKnock() {
   const k = net.knock; if (!k) return;
   clearTimeout(k.timer); net.knock = null; hideToast();
   unlist(); net.open = false;                  // a match now: listed for spectators instead, if Public
+  net.lastGuest = { rj: k.rj, name: k.name, team: -1, until: 0 };   // to know them again if their connection drops
   net.room.accept(k.gid, k.name);
-  startAsHost(k.name);
+  startAsHost(k.name, !!k.back);
 }
 function declineKnock() { const k = net.knock; if (!k) return; clearTimeout(k.timer); net.knock = null; hideToast(); net.room.decline(k.gid); }
 
 /* The host seeds the guest with the match as it stands: a match against the computer carries on with the guest
    taking the computer's side, the setup screen starts a fresh match. */
-async function startAsHost(guestName) {
+async function startAsHost(guestName, back) {
   await viewReady;
   if (mode !== 'play') { makeGame(); }
   const me = mode === 'play' ? (cpuTeam() >= 0 ? 1 - cpuTeam() : 0) : 0;
   net.me = me; net.peer = guestName;
+  if (net.lastGuest) net.lastGuest.team = 1 - me;
   net.pendingStart = { me };
   closeOnline();
-  net.link.send({ t: 'start', state: R.snapshot(G), guestTeam: 1 - me, host: net.name, midstream: mode === 'play' }, true);
-  toast(`Connecting to <b>${esc(guestName)}</b>…`);
+  net.link.send({ t: 'start', state: R.snapshot(G), guestTeam: 1 - me, host: net.name, midstream: mode === 'play', back: !!back }, true);
+  toast(back ? `<b>${esc(guestName)}</b> is back. Reconnecting…` : `Connecting to <b>${esc(guestName)}</b>…`);
 }
 function onGo() {
   const ps = net.pendingStart; if (!ps) return;
@@ -839,13 +847,47 @@ function onGo() {
 
 /* ----- joining: invite link or quick match ----- */
 const WAIT_MS = 60000;      // how long a link waits for its host to come back before it counts as expired
-function joinRoom(code, fromQuick) {
+/* Coming back after a dropped connection. A guest whose connection dies without a goodbye plays on against the
+   computer here, and keeps knocking on the host's room for REJOIN_MS, sooner when the network or the tab comes back.
+   The host knows them again by a token this tab keeps for the code (rj), lets them straight back in on their old
+   side, and sends the match as it stands on the host's screen (the host's match is the one that counts). */
+const REJOIN_MS = 120000;
+const STALL_GIVE_UP = 10;    // seconds without the other side's moves before the computer takes their side (they can come back)
+function rejoinToken(code) {
+  const k = 'flick-rj-' + code; let t = '';
+  try { t = sessionStorage.getItem(k) || ''; } catch (e) { /* private mode */ }
+  if (!/^[A-Za-z0-9]{6,32}$/.test(t)) { t = Net.newCode() + Net.newCode(); try { sessionStorage.setItem(k, t); } catch (e) { /* ignore */ } }
+  return t;
+}
+function rejoinNow() {
+  const r = net.rejoin; if (!r) return;
+  clearTimeout(r.timer);
+  if (net.guest && !net.link && net.guest.state === 0) { net.guest.close(); net.guest = null; }   // an attempt hung while offline: start afresh
+  if (net.guest || net.session || net.watch) return;     // already back, or doing something else now
+  if (Date.now() > r.until) { clearTimeout(r.dl); net.rejoin = null; toast(`Could not get back to ${esc(r.host)}'s game, so you carry on against the computer.`, [['OK', hideToast]], 6000); return; }
+  joinRoom(r.code, false, true);
+}
+function scheduleRejoin() {
+  const r = net.rejoin; if (!r) return;
+  clearTimeout(r.timer);
+  const ms = navigator.onLine === false ? 15000 : Math.min(15000, 1000 * 2 ** r.tries++) * (0.5 + Math.random() * 0.5);
+  r.timer = setTimeout(rejoinNow, ms);
+}
+function joinRoom(code, fromQuick, rejoin) {
+  const r = net.rejoin;
   leaveOnline();
+  if (rejoin) net.rejoin = r;
   net.code = code;
   const giveUp = () => { clearTimeout(net.joinWait); net.joinWait = null; };
+  const hostName = rejoin && r ? r.host : '';
+  if (rejoin && r && !r.dl) {      // the whole window, however the knocks go (a host whose socket hangs never answers)
+    r.dl = setTimeout(() => { if (net.rejoin !== r || net.link) return; stopRejoin(); toast(`Could not get back to ${esc(r.host)}'s game, so you carry on against the computer.`, [['OK', hideToast]], 6000); }, Math.max(0, r.until - Date.now()));
+  }
   net.guest = Net.join(code, {
     name: net.name,
+    rj: rejoinToken(code),
     onWaiting: () => {
+      if (rejoin) { toast(`Waiting for <b>${esc(hostName)}</b> to come back online…`, [['Stop', stopRejoin]], 8000); return; }   // the knock goes in when they do
       if (fromQuick) { const g = net.guest; net.guest = null; if (g) g.close(); net.tried.push(fromQuick); quickMatch(true); return; }   // quick match does not wait
       showJoin('Waiting for the game to open…<br><small>If your friend just switched apps to send you the link, you are let in as soon as they are back.</small>');
       giveUp();
@@ -857,14 +899,20 @@ function joinRoom(code, fromQuick) {
         refreshOpenNow();
       }, WAIT_MS);
     },
-    onKnocking: hostName => { giveUp(); showJoin(`Waiting for <b>${esc(hostName)}</b> to let you in…`); },
-    onLink: (link, hostName) => { giveUp(); net.link = link; net.peer = hostName; showJoin(`Joining <b>${esc(hostName)}</b>…`); },
+    onKnocking: hostName => { giveUp(); if (rejoin) toast(`Reconnecting to <b>${esc(hostName)}</b>…`, [['Stop', stopRejoin]], 8000); else showJoin(`Waiting for <b>${esc(hostName)}</b> to let you in…`); },
+    onLink: (link, hostName) => { giveUp(); net.link = link; net.peer = hostName; if (!rejoin) showJoin(`Joining <b>${esc(hostName)}</b>…`); },
     onAudio: st => walkie.heard(st),
     onMessage: m => onNetMessage(m),
     onVia: v => { net.via = v; paintNet(); },
-    onLeft: () => peerLeft(),
+    onLeft: c => peerLeft(c === 4001),          // 4001: the host left on purpose, so there is nothing to come back to
     onClose: c => {
       net.guest = null; giveUp();
+      if (rejoin) {
+        // Still no network (or the room restarting): knock again shortly. The host gone or the side taken: stop.
+        const why = c === 4001 || c === 4004 ? `${esc(hostName)} has left that game.` : c === 4003 ? `${esc(hostName)} could not take you back.` : c === 4010 ? `${esc(hostName)} is playing someone else now.` : '';
+        if (!why) { scheduleRejoin(); return; }
+        clearTimeout(r.dl); net.rejoin = null; toast(why + ' You carry on against the computer.', [['OK', hideToast]], 6000); return;
+      }
       if (fromQuick) { net.tried.push(fromQuick); quickMatch(true); return; }
       // Both sides already have a player: watch the match instead. The room says "full" (or "busy" while someone joins).
       if (c === 4010) { watchTable(code, 'Both sides already have a player, so you are watching.'); return; }
@@ -873,6 +921,10 @@ function joinRoom(code, fromQuick) {
       refreshOpenNow();      // that player may have gone: show the list as it is now
     }
   });
+  if (rejoin) {                    // an attempt that has not connected in 8 s has hung: drop it and knock again
+    const g = net.guest;
+    setTimeout(() => { if (net.guest === g && g.state === 0) { g.close(); net.guest = null; scheduleRejoin(); } }, 8000);
+  }
 }
 async function quickMatch(retry) {
   if (!retry) net.tried = [];
@@ -888,9 +940,11 @@ async function quickMatch(retry) {
   setOpen(true);
   toast('Nobody is free right now. Play the computer, and the next person looking will join you.', [['OK', hideToast]], 6000);
 }
+function stopRejoin() { if (net.rejoin) { clearTimeout(net.rejoin.timer); clearTimeout(net.rejoin.dl); net.rejoin = null; } if (net.guest && !net.link) { net.guest.close(); net.guest = null; } hideToast(); }
 function onStart(m) {
   // We are the guest: take the host's match exactly as it stands.
   hideJoin();
+  if (net.rejoin) { clearTimeout(net.rejoin.timer); clearTimeout(net.rejoin.dl); net.rejoin = null; hideToast(); }
   R.restore(G, m.state); G.sink = onEvent;
   if (V) V.attach(G);
   net.me = m.guestTeam; net.peer = m.host;
@@ -898,7 +952,7 @@ function onStart(m) {
   net.link.send({ t: 'go' }, true);
   if (PHONE && canFull && !isFull()) toast('Play full screen?', [['Full screen', () => { hideToast(); enterFullscreen(); }], ['No thanks', hideToast]], 8000);
   flashGestures();
-  R.say(G, m.midstream ? 'You are in' : 'Kick-off', 'info', m.midstream ? `You take over from the computer against ${m.host}.` : `${G.names[0]} v ${G.names[1]}.`);
+  R.say(G, m.back ? 'You are back' : m.midstream ? 'You are in' : 'Kick-off', 'info', m.back ? `Back in the match against ${m.host}, as it stands on their screen.` : m.midstream ? `You take over from the computer against ${m.host}.` : `${G.names[0]} v ${G.names[1]}.`);
 }
 
 function beginSession(isHost, me) {
@@ -997,7 +1051,7 @@ function onNetMessage(m) {
     case 'go': onGo(); break;
     case 'aim': remoteAim.recv(m); break;
     case 'hov': remoteAim.hover = m.id; break;
-    case 'bye': peerLeft(true); break;
+    case 'bye': peerLeft(!m.drop); break;
     case 'watchers': net.watchers = m.n; paintNet(); break;
     case 'react': gotReaction(m.r, isHostSide() ? 'guest' : 'host'); break;
     default: if (net.session) net.session.receive(m);
@@ -1008,7 +1062,11 @@ const isHostSide = () => !!net.room && net.room.link === net.link;
 /* The other player left or dropped: the computer takes over their side and the match goes on. */
 function peerLeft(said) {
   const was = net.session, name = net.peer || 'Your opponent';
-  if (net.link && !said) { try { net.link.send({ t: 'bye' }, true); } catch (e) { /* ignore */ } net.link.close(); }
+  const asGuest = !!net.guest, asHost = !!net.room && !net.guest, code = net.code;
+  // Dropped, not a goodbye: the host keeps the side for them a while; the guest keeps knocking to get back.
+  if (asHost && net.lastGuest && was) net.lastGuest.until = said ? 0 : Date.now() + REJOIN_MS;   // only when a match ends: a late echo changes nothing
+  if (asGuest && was && !said && code && mode === 'play') { net.rejoin = { code, host: name, until: Date.now() + REJOIN_MS, tries: 0, timer: null }; }
+  if (net.link && !said) { try { net.link.send({ t: 'bye', drop: true }, true); } catch (e) { /* ignore */ } net.link.close(); }   // drop: we lost them, they may come back
   endSession();
   if (net.guest) { net.guest.close(); net.guest = null; }
   if (net.room && !net.room.link) { /* room stays open for the next knock */ }
@@ -1016,11 +1074,13 @@ function peerLeft(said) {
   if (was && mode === 'play') {
     const c = ctl.map(x => x === 'remote' ? 'ai' : x);
     setControllers(c);
-    R.say(G, `${name} left`, 'info', 'The computer takes over their side.');
+    if (said) R.say(G, `${name} left`, 'info', 'The computer takes over their side.');
+    else R.say(G, `${name} lost connection`, 'info', asGuest ? 'The computer plays for them here while you reconnect.' : 'The computer plays their side until they are back.');
     feedKeyframe();
-    applyVis();
+    if (net.rejoin) paintVis(); else applyVis();          // reconnecting: do not open this screen to challengers meanwhile
   }
   paintNet(); paintOnline();
+  if (net.rejoin) scheduleRejoin();
 }
 function endSession() {
   walkie.stop();
@@ -1032,6 +1092,8 @@ function endSession() {
   localTick = 0; acc = 0; clearInputs(); setTimeout(syncBackground, 0);
 }
 function leaveOnline() {
+  if (net.rejoin) { clearTimeout(net.rejoin.timer); clearTimeout(net.rejoin.dl); net.rejoin = null; }
+  net.lastGuest = null;
   if (net.link) { try { net.link.send({ t: 'bye' }, true); } catch (e) { /* ignore */ } }
   endSession();
   if (net.guest) { net.guest.close(); net.guest = null; }
@@ -1471,7 +1533,7 @@ function advance(dt) {
     addSmoothing(net.session.update(dt, t => inputFor(net.me, t)));
     const done = net.session.takeConfirmed();                 // final ticks: to spectators (host), dropped (guest)
     if (isHostSide()) for (const ins of done) feed.push(ins);
-    if (net.session.stalled > 15) { peerLeft(); return; }   // their device went to sleep without saying goodbye
+    if (net.session.stalled > STALL_GIVE_UP) { peerLeft(); return; }   // their device went to sleep or lost signal without saying goodbye
   } else if (!net.pendingStart && $('#help').hidden && $('#menuOv').hidden) {
     acc += Math.min(dt, 0.05);
     let n = 0;
@@ -1504,8 +1566,8 @@ function syncBackground() {
 }
 document.addEventListener('visibilitychange', syncBackground);
 /* Back from another app (often WhatsApp, after sending the invite): make sure the room is up, so the link works. */
-document.addEventListener('visibilitychange', () => { if (!document.hidden && net.room) net.room.wake(); });
-addEventListener('online', () => { if (net.room) net.room.wake(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && net.room) net.room.wake(); if (!document.hidden && net.rejoin) rejoinNow(); });
+addEventListener('online', () => { if (net.room) net.room.wake(); if (net.rejoin) rejoinNow(); });
 
 /* ---------- phones: full screen, landscape, screen awake, and a frame-rate governor ---------- */
 const PHONE = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
@@ -1587,7 +1649,7 @@ requestAnimationFrame(tick);
 
 /* Read-only hook for tests and support: the match hash, tick and network stats. */
 window.playcity = { toScreen: (x, z) => V && V.toScreen(x, 0, z), state: () => ({ mode: G && G.mode, forced: G && G.forced, cam: V && V.preset, players: G && G.w.players.map(p => [p.id, p.team, +p.x.toFixed(2), +p.z.toFixed(2)]), hash: G && R.hash(G), ball: G && [+G.w.ball.x.toFixed(4), +G.w.ball.z.toFixed(4)], score: G && G.score.slice(), phase: G && G.phase, clock: G && +G.clock.toFixed(2), half: G && G.half, turn: G && G.turn, ctl: ctl.slice(),
-  tick: net.session ? net.session.tick : localTick, watchTick: net.watch ? net.watch.viewer.play : null, aimQ: net.watch ? net.watch.viewer.aims.map(a => a.ft) : null, aimT: watchAim.target.map(x => x && x.id), feedActive: feed.active, watchers: net.watchers, feedTick: feed.ft, via: net.via, rtt: net.session ? net.session.lag() : null, stats: net.session ? Object.assign({}, net.session.stats) : null }) };
+  tick: net.session ? net.session.tick : localTick, watchTick: net.watch ? net.watch.viewer.play : null, aimQ: net.watch ? net.watch.viewer.aims.map(a => a.ft) : null, aimT: watchAim.target.map(x => x && x.id), feedActive: feed.active, watchers: net.watchers, code: net.room ? net.room.code : null, rejoin: !!net.rejoin, peer: net.peer || null, feedTick: feed.ft, via: net.via, rtt: net.session ? net.session.lag() : null, stats: net.session ? Object.assign({}, net.session.stats) : null }) };
 
 refreshOpenNow();
 

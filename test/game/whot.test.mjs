@@ -171,3 +171,62 @@ describe("whot knock-out rounds", () => {
     expect(W.tourPlan(W.newGame(seats(3), 0), 0).mode).toBe("none");
   });
 });
+
+describe("shuffling", () => {
+  const pairs = hand => { const c = {}; for (const x of hand) c[x.n] = (c[x.n] || 0) + 1; return Object.values(c).reduce((a, v) => a + v * (v - 1) / 2, 0); };
+  // In a fair deal, a 5-card hand holds C(5,2) * P(two cards share a number) same-number pairs on average.
+  const counts = W.buildDeck().reduce((m, c) => (m[c.n] = (m[c.n] || 0) + 1, m), {});
+  const fairPairs = 10 * Object.values(counts).reduce((a, v) => a + v * (v - 1), 0) / (54 * 53);
+
+  it("deals hands as a fair deck would, whatever the number of players", () => {
+    for (const n of [2, 3, 4]) {
+      let sum = 0, whots = 0, hands = 0;
+      for (let k = 0; k < 6000; k++) {
+        for (const p of W.newGame(seats(n), k % n).players) { sum += pairs(p.hand); whots += p.hand.filter(c => c.n === 20).length; hands++; }
+      }
+      expect(Math.abs(sum / hands - fairPairs)).toBeLessThan(0.04);         // about 5 standard errors
+      expect(Math.abs(whots / hands - 25 / 54)).toBeLessThan(0.03);
+    }
+  });
+
+  it("never leaves two cards of one number side by side in the market after the deal", () => {
+    for (let k = 0; k < 2000; k++) {
+      const g = W.newGame(seats(2 + (k % 3)), 0);
+      expect(W.clumps(g.market)).toBe(0);
+      expect([1, 2, 5, 8, 14, 20]).not.toContain(g.discard[0].n);           // the start card is an ordinary one
+    }
+  });
+
+  it("picks every allowed market order equally often, and minds the seam with the cards below", () => {
+    const deck = W.buildDeck();
+    const two = deck.filter(c => c.n === 2).slice(0, 2), seven = deck.find(c => c.n === 7), eight = deck.find(c => c.n === 8);
+    const tally = new Map();
+    const N = 24000;
+    for (let i = 0; i < N; i++) {
+      const out = W.shuffleMarket([two[0], two[1], seven, eight], deck.find(c => c.n === 8 && c.id !== eight.id));
+      expect(W.clumps(out, { n: 8 })).toBe(0);
+      const key = out.map(c => c.id).join(",");
+      tally.set(key, (tally.get(key) || 0) + 1);
+    }
+    // Of the 24 orders, 10 keep the 2s apart and the 8 off the end: the 2s at 1st and 3rd (then the 7 is last), or at
+    // 1st and 4th, or 2nd and 4th (7 and 8 either way round), times the two orders of the 2s. Each should come up a tenth of the time.
+    const allowed = [...tally.keys()];
+    expect(allowed.length).toBe(10);
+    for (const k of allowed) expect(Math.abs(tally.get(k) - N / 10)).toBeLessThan(N / 10 * 0.12);
+  });
+
+  it("settles for the fewest clumps when none-free is impossible, without hanging", () => {
+    const twos = W.buildDeck().filter(c => c.n === 2).slice(0, 3);
+    const out = W.shuffleMarket([...twos, W.buildDeck()[0]]);
+    expect(out.length).toBe(4);
+    expect(W.clumps(out)).toBe(1);
+  });
+
+  it("draws its randomness from crypto in batches", () => {
+    const spy = vi.spyOn(globalThis.crypto, "getRandomValues");
+    try {
+      for (let k = 0; k < 200; k++) W.newGame(seats(2 + (k % 3)), 0);
+      expect(spy.mock.calls.length / 200).toBeLessThan(10);                   // one number per call would be thousands
+    } finally { spy.mockRestore(); }
+  });
+});
