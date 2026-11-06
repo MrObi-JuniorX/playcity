@@ -1,0 +1,69 @@
+# Deploy playcity to Cloudflare (docs/deploying.md).
+#   push to `staging`     tests, then database migrations and a deploy to the playcity-staging Worker
+#   push to `production`  the same, to the live playcity Worker
+#   pull request into either  the tests only (the check that branch protection requires)
+# Each GitHub environment (Settings, Environments: "staging" and "production") holds CLOUDFLARE_API_TOKEN and
+# CLOUDFLARE_ACCOUNT_ID. Without them the tests still run and the deploy is skipped with a warning.
+name: Deploy
+
+on:
+  push:
+    branches: [staging, production]
+  pull_request:
+    branches: [staging, production]    # the tests gate the merge; nothing deploys from a pull request
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref_name }}
+  cancel-in-progress: false            # never stop a deploy halfway
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npx tsc --noEmit -p .
+      - run: npm run lint:cf
+      - run: npm run build
+      - run: npm test
+
+  deploy:
+    needs: test
+    if: github.event_name != 'pull_request' && (github.ref_name == 'staging' || github.ref_name == 'production')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ github.ref_name }}     # production can require an approval: see docs/deploying.md
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      TARGET: ${{ github.ref_name }}
+    steps:
+      - name: Cloudflare credentials
+        id: creds
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::warning::The $TARGET environment has no CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID yet, so nothing was deployed. See docs/deploying.md."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.creds.outputs.ready == 'true'
+      - uses: actions/setup-node@v4
+        if: steps.creds.outputs.ready == 'true'
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+        if: steps.creds.outputs.ready == 'true'
+      - name: Database (find or create)
+        if: steps.creds.outputs.ready == 'true'
+        run: node scripts/ci-d1.mjs "$TARGET"
+      - name: Database migrations
+        if: steps.creds.outputs.ready == 'true'
+        run: npx wrangler d1 migrations apply DB --remote --env "$TARGET"
+      - name: Deploy
+        if: steps.creds.outputs.ready == 'true'
+        run: npx wrangler deploy --env "$TARGET"

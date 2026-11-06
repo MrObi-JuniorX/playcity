@@ -25,10 +25,49 @@
     { "tag": "v4", "new_sqlite_classes": ["CupTable"] }
   ],
   // Whot Cup system of record: players, wallets, the ledger, cups (docs/whot-cup-prd.md, section 10).
-  // No database_id: `wrangler deploy` creates the database on first deploy and writes its id back here.
+  // This top level is local dev and the tests. The deployed Workers are the two environments below.
   "d1_databases": [{ "binding": "DB", "database_name": "playcity", "migrations_dir": "migrations" }],
   // Daily housekeeping: sign-in code rows after 24 hours, long-dead sessions (src/auth/routes.ts cleanup).
   "triggers": { "crons": ["17 3 * * *"] },
-  "observability": { "enabled": true, "head_sampling_rate": 0.1 }
-  // Optional TURN for players behind strict NATs: wrangler secret put TURN_KEY_ID / TURN_KEY_API_TOKEN
+  "observability": { "enabled": true, "head_sampling_rate": 0.1 },
+  // Optional TURN for players behind strict NATs: wrangler secret put TURN_KEY_ID / TURN_KEY_API_TOKEN --env <env>
+
+  /* The deployed Workers (docs/deploying.md). The `staging` branch deploys `--env staging`, the `production` branch
+     `--env production`, both through .github/workflows/deploy.yml. Each has its own Worker, its own D1 database and
+     its own Durable Objects, so nothing on staging can touch production. Durable Object bindings, the database and
+     vars aren't inherited from the top level, so each environment lists them again; the rest is inherited.
+     database_id "set-by-deploy": the workflow finds (or creates) the environment's database and fills its id in
+     for the deploy. Once you know the ids you can commit them here instead. */
+  "env": {
+    "staging": {
+      "name": "playcity-staging",
+      "durable_objects": {
+        "bindings": [
+          { "name": "ROOM", "class_name": "Room" },
+          { "name": "LOBBY", "class_name": "Lobby" },
+          { "name": "WHOT", "class_name": "WhotTable" },
+          { "name": "CUP", "class_name": "CupDirector" },
+          { "name": "CUP_GATE", "class_name": "CupGate" },
+          { "name": "CUP_TABLE", "class_name": "CupTable" }
+        ]
+      },
+      "d1_databases": [{ "binding": "DB", "database_name": "playcity-staging", "database_id": "set-by-deploy", "migrations_dir": "migrations" }],
+      "vars": { "CUP_TABLE_MODE": "external" }
+    },
+    "production": {
+      "name": "playcity",
+      "durable_objects": {
+        "bindings": [
+          { "name": "ROOM", "class_name": "Room" },
+          { "name": "LOBBY", "class_name": "Lobby" },
+          { "name": "WHOT", "class_name": "WhotTable" },
+          { "name": "CUP", "class_name": "CupDirector" },
+          { "name": "CUP_GATE", "class_name": "CupGate" },
+          { "name": "CUP_TABLE", "class_name": "CupTable" }
+        ]
+      },
+      "d1_databases": [{ "binding": "DB", "database_name": "playcity-production", "database_id": "set-by-deploy", "migrations_dir": "migrations" }],
+      "vars": { "CUP_TABLE_MODE": "external" }
+    }
+  }
 }
