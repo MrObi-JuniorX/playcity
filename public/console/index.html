@@ -11,12 +11,14 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600..800&family=Figtree:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap">
 <style>
-/* Layout: a top bar with the sections, then one working area. The cup editor splits into the form and a sticky
-   preview from 1100px wide; below that the preview follows the form. */
+/* Layout: a top bar with the console's areas, then one working area. A cup has three columns from 1240px wide: an index
+   of its sections, the one section being edited, and a sticky preview. From 1000px the index moves above the form and
+   preview. Below that everything is one column, with the index as a row that scrolls sideways. The Model page has its
+   settings in a sticky column beside the results. */
 :root{
   color-scheme:dark;
   --bg:#0b1316; --ink:#eef4f0; --muted:#9bb2ad; --line:rgba(255,255,255,.12); --panel:#101c20; --field:#0d171a;
-  --accent:#ffc247; --accent-ink:#2b1c00; --bad:#ff8f7a; --good:#7fd69a; --warn:#f2c14e; --main:#e2566b; --second:#22a094;
+  --accent:#ffc247; --accent-ink:#2b1c00; --bad:#ff8f7a; --good:#7fd69a; --warn:#f2c14e; --main:#e2566b; --second:#22a094; --s-platform:#7484d6; --s-final:#c98a22;
   --font-display:'Bricolage Grotesque','Trebuchet MS',system-ui,sans-serif;
   --font-body:'Figtree',system-ui,-apple-system,'Segoe UI',sans-serif;
   --font-mono:'DM Mono',ui-monospace,Menlo,monospace;
@@ -25,15 +27,22 @@
 html{background:var(--bg)}
 body{margin:0; min-height:100dvh; color:var(--ink); font:400 15px/1.5 var(--font-body); background:var(--bg)}
 a{color:var(--accent)}
-.wrap{max-width:1360px; margin:0 auto; padding-block:16px 48px; padding-left:max(16px,env(safe-area-inset-left,0px)); padding-right:max(16px,env(safe-area-inset-right,0px))}
+.wrap{max-width:1480px; margin:0 auto; padding-block:16px 48px; padding-left:max(16px,env(safe-area-inset-left,0px)); padding-right:max(16px,env(safe-area-inset-right,0px))}
 header.bar{display:flex; flex-wrap:wrap; align-items:center; gap:10px 18px; padding-bottom:14px; border-bottom:1px solid var(--line); margin-bottom:20px}
 .brand{display:flex; align-items:center; gap:9px; font:800 1.1rem var(--font-display); color:inherit; text-decoration:none}
 .brand i{width:11px; height:11px; border-radius:50%; background:var(--accent)}
 .brand small{font:500 .78rem var(--font-mono); color:var(--muted); letter-spacing:.06em; text-transform:uppercase}
-nav{display:flex; flex-wrap:wrap; gap:4px; flex:1}
-nav button{border:0; background:none; color:var(--muted); font:600 .95rem var(--font-body); padding:7px 11px; border-radius:9px; cursor:pointer}
-nav button[aria-current=page]{background:var(--panel); color:var(--ink)}
+#nav{display:flex; flex-wrap:wrap; align-items:center; gap:4px; flex:1}
+#nav button{border:0; background:none; color:var(--muted); font:600 .95rem var(--font-body); padding:7px 11px; border-radius:9px; cursor:pointer}
+#nav button[aria-current=page]{background:var(--panel); color:var(--ink)}
+#nav .navgap{width:1px; height:18px; background:var(--line); margin:0 6px}
 .who{color:var(--muted); font-size:.9rem}
+@media (max-width:640px){
+  header.bar{gap:8px 10px} .brand{flex:1} .who{display:none}
+  #nav{order:3; flex:0 0 100%; flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none}
+  #nav button{flex:none}
+  #lockBtn{padding:6px 11px; font-size:.84rem}
+}
 h1{margin:0; font:800 1.6rem/1.15 var(--font-display); letter-spacing:-.02em; text-wrap:balance}
 h2{margin:0; font:700 1.1rem var(--font-display)}
 h3{margin:0; font:700 .95rem var(--font-body)}
@@ -41,10 +50,18 @@ h3{margin:0; font:700 .95rem var(--font-body)}
 .spread{display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:space-between}
 .card{background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px}
 .stack{display:flex; flex-direction:column; gap:14px}
-button.btn{font:700 .92rem var(--font-body); border-radius:10px; padding:9px 14px; cursor:pointer; border:1px solid var(--line); background:transparent; color:var(--ink)}
-button.btn.primary{background:var(--accent); border-color:var(--accent); color:var(--accent-ink)}
-button.btn.danger{border-color:rgba(255,143,122,.5); color:var(--bad)}
-button.btn:disabled{opacity:.5; cursor:default}
+.btn{display:inline-block; font:700 .92rem var(--font-body); border-radius:10px; padding:9px 14px; cursor:pointer; border:1px solid var(--line); background:transparent; color:var(--ink); text-decoration:none; white-space:nowrap}
+.btn.primary{background:var(--accent); border-color:var(--accent); color:var(--accent-ink)}
+.btn.danger{border-color:rgba(255,143,122,.5); color:var(--bad)}
+.btn.small{font-size:.8rem; padding:5px 10px; border-radius:8px}
+.btn[aria-pressed=true]{background:var(--accent); border-color:var(--accent); color:var(--accent-ink)}
+.btn:disabled{opacity:.5; cursor:default}
+.pagehead{display:grid; gap:4px; min-width:0} .pagehead p{margin:0; color:var(--muted); max-width:72ch; font-size:.92rem}
+details.menu{position:relative}
+details.menu summary{list-style:none} details.menu summary::-webkit-details-marker{display:none}
+details.menu summary::after{content:" ▾"; font-size:.8em}
+.menubox{position:absolute; right:0; top:calc(100% + 6px); z-index:10; display:grid; gap:6px; min-width:190px; padding:8px; background:var(--panel); border:1px solid var(--line); border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,.45)}
+.menubox .btn{text-align:left; width:100%}
 button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid var(--accent); outline-offset:2px}
 input,select,textarea{font:500 .95rem var(--font-body); color:var(--ink); background:var(--field); border:1px solid var(--line); border-radius:9px; padding:8px 10px; width:100%; min-width:0}
 input[type=checkbox]{width:18px; height:18px; accent-color:var(--accent)}
@@ -64,20 +81,85 @@ th,td{text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); ve
 th{font:500 .74rem var(--font-mono); text-transform:uppercase; letter-spacing:.06em; color:var(--muted)}
 td.num,th.num{text-align:right}
 tbody tr.link{cursor:pointer} tbody tr.link:hover{background:rgba(255,255,255,.03)}
+tr.grp th{padding-top:16px; color:var(--ink); font:700 .9rem var(--font-display); text-transform:none; letter-spacing:0}
+tr.grp .muted{font:500 .8rem var(--font-mono); margin-left:4px}
 .scroll{overflow-x:auto}
 .gate{max-width:460px; margin:8vh auto 0}
 
 /* cup editor */
-.editor{display:grid; grid-template-columns:minmax(0,1fr); gap:20px}
-@media (min-width:1100px){ .editor{grid-template-columns:minmax(0,1.15fr) minmax(0,1fr)} .preview{position:sticky; top:16px; max-height:calc(100dvh - 32px); overflow:auto} }
+.editor{display:grid; grid-template-columns:minmax(0,1fr); gap:16px 20px; align-items:start}
+@media (min-width:1000px){ .editor{grid-template-columns:minmax(0,1.1fr) minmax(0,1fr)} .secnav{grid-column:1/-1} .preview{position:sticky; top:16px; max-height:calc(100dvh - 32px); overflow:auto} }
+@media (min-width:1240px){ .editor{grid-template-columns:220px minmax(0,1.15fr) minmax(0,1fr)} .secnav{grid-column:auto; position:sticky; top:16px; flex-direction:column; overflow:visible; padding:0} .secnav button{width:100%; min-width:0; flex:none} .navlabel{display:block!important} }
+.secnav{display:flex; gap:6px; overflow-x:auto; padding-bottom:6px; min-width:0; scrollbar-width:thin}
+.navlabel{display:none; margin:10px 0 2px 10px; font:500 .72rem var(--font-mono); text-transform:uppercase; letter-spacing:.06em; color:var(--muted)}
+.navlabel:first-child{margin-top:0}
+.secnav button{flex:0 0 auto; display:grid; gap:1px; min-width:150px; max-width:200px; text-align:left; border:1px solid transparent; background:none; color:var(--ink); padding:8px 10px; border-radius:10px; cursor:pointer; font:inherit}
+.secnav button:hover{background:rgba(255,255,255,.04)}
+.secnav button[aria-current]{background:var(--panel); border-color:var(--line); box-shadow:inset 3px 0 0 var(--accent)}
+.secnav .t{display:flex; align-items:center; gap:7px; font-weight:700; font-size:.9rem}
+.secnav .s{font-size:.76rem; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.dot{width:8px; height:8px; border-radius:50%; background:var(--bad); flex:none}
+.panel{min-width:0; display:flex; flex-direction:column; gap:12px}
+.savebar{position:sticky; bottom:12px; z-index:5; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; padding:10px 12px; background:var(--panel); border:1px solid var(--accent); border-radius:12px; box-shadow:0 8px 24px rgba(0,0,0,.45); font-size:.92rem}
+.secfoot{padding-top:2px}
+.parked{font-size:.86rem; color:var(--muted)} .parked summary{cursor:pointer; font-weight:600}
+.parked ul{margin:8px 0 0; padding-left:18px} .parked li+li{margin-top:4px} .parked b{color:var(--ink)}
 fieldset{border:1px solid var(--line); border-radius:12px; padding:12px 14px 14px; margin:0; min-width:0}
 legend{font:700 .9rem var(--font-display); padding:0 6px}
-.fields{display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,220px),1fr)); gap:12px 14px}
-.field label{display:block; font-weight:600; font-size:.86rem; margin-bottom:4px}
+.fields{display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,220px),1fr)); gap:14px; align-items:start}
+.fields.one{grid-template-columns:minmax(0,1fr)}
+.field{min-width:0}
+.lab{display:flex; align-items:center; gap:7px; margin-bottom:4px; min-height:24px}
+.lab label{display:block; font-weight:600; font-size:.86rem; margin:0; min-width:0}
 .field .help{font-size:.78rem; color:var(--muted); margin-top:3px}
 .field.wide{grid-column:1/-1}
 .field.bad input,.field.bad select{border-color:var(--bad)}
-.check{display:flex; gap:8px; align-items:center; font-weight:600; font-size:.86rem; padding-top:22px}
+.field.toggle .lab{margin:0}
+.unit{display:flex; align-items:center; gap:8px} .unit span{flex:none; font-size:.8rem; color:var(--muted); max-width:45%}
+.slide{display:flex; align-items:center; gap:10px} .slide input{flex:1; padding:0; accent-color:var(--accent)} .slide output{font:500 .85rem var(--font-mono); min-width:4ch; text-align:right}
+.presets{display:flex; flex-wrap:wrap; gap:6px; margin-top:-6px}
+.i{flex:none; position:relative; width:18px; height:18px; padding:0; border-radius:50%; border:1px solid var(--muted); background:none; color:var(--muted); font:italic 700 .72rem/1 Georgia,'Times New Roman',serif; cursor:help}
+.i::after{content:""; position:absolute; inset:-8px}
+.i:hover,.i[aria-expanded=true]{border-color:var(--accent); background:var(--accent); color:var(--accent-ink)}
+#tip{position:fixed; z-index:50; width:min(320px,calc(100vw - 24px)); padding:11px 13px; background:#1b2c31; border:1px solid rgba(255,255,255,.22); border-radius:11px; box-shadow:0 12px 32px rgba(0,0,0,.55); font-size:.86rem; line-height:1.45}
+#tip b{display:block; font-size:.88rem; margin-bottom:3px} #tip p{margin:0}
+#tip .tipmeta{margin-top:6px; font:500 .76rem var(--font-mono); color:var(--muted)} #tip .tipmeta + .tipmeta{margin-top:2px}
+.linkish{all:unset; cursor:pointer; text-decoration:underline; text-decoration-color:rgba(255,143,122,.45); text-underline-offset:2px}
+.linkish:focus-visible{outline:3px solid var(--accent); outline-offset:2px}
+details>summary{cursor:pointer}
+#ladderBox summary{font-weight:600; font-size:.9rem} #ladderBox .scroll{margin-top:8px}
+
+/* the Model page */
+.modelgrid{display:grid; grid-template-columns:minmax(0,1fr); gap:20px; align-items:start}
+@media (min-width:1000px){ .modelgrid{grid-template-columns:330px minmax(0,1fr)} .modelform{position:sticky; top:16px; max-height:calc(100dvh - 32px); overflow:auto} }
+.tight{gap:10px}
+.warnbox{border-color:var(--bad)}
+.stats.big{grid-template-columns:repeat(2,minmax(0,1fr)); border-radius:12px}
+@media (min-width:1200px){ .stats.big{grid-template-columns:repeat(3,minmax(0,1fr))} }
+.stats.big .stat{padding:12px 14px}
+.stats.big .stat b{font-size:1.3rem; line-height:1.2} .stats.big .stat.key b{color:var(--accent)}
+.splitbar{display:flex; height:28px; gap:2px; border-radius:6px; overflow:hidden}
+.splitbar div{min-width:2px}
+.legend{display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr)); gap:8px 18px; font-size:.88rem}
+.legend div{display:grid; grid-template-columns:12px 1fr auto; gap:8px; align-items:baseline}
+.legend i{width:12px; height:12px; border-radius:3px; align-self:center}
+.legend b{font-weight:500; font-size:.82rem}
+.twoup{display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr)); gap:16px; align-items:stretch}
+.twoup>*{min-width:0; align-content:start}
+.bars{display:grid; gap:9px}
+.bar{display:grid; gap:3px}
+.bar .lbl{font-size:.82rem; color:var(--muted)}
+.bar .track{display:flex; align-items:center; gap:8px; min-width:0}
+.bar .fill{height:15px; background:var(--main); border-radius:0 4px 4px 0; min-width:2px}
+.bar.zero .fill{background:var(--muted)}
+.bar .val{font-size:.8rem; white-space:nowrap}
+.prizes{list-style:none; margin:0; padding:0; display:grid; gap:7px}
+.prizes li{display:flex; justify-content:space-between; gap:10px; align-items:baseline; padding-bottom:7px; border-bottom:1px solid var(--line)}
+.prizes li:last-child{border:0; padding:0}
+.prizes b{font:700 1.05rem var(--font-display)}
+.chip.t1{color:var(--main); border-color:rgba(226,86,107,.5)} .chip.fin{color:var(--accent); border-color:var(--accent)}
+.notes{margin:0; padding-left:18px; color:var(--muted); font-size:.9rem; max-width:80ch} .notes li+li{margin-top:7px} .notes b{color:var(--ink)}
+.check{display:flex; gap:8px; align-items:center; font-weight:600; font-size:.86rem}
 .split4{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:6px}
 .countries{display:flex; flex-wrap:wrap; gap:6px 12px}
 .countries label{display:flex; align-items:center; gap:5px; font-weight:500}
@@ -89,8 +171,9 @@ legend{font:700 .9rem var(--font-display); padding:0 6px}
 .size[aria-pressed=true]{border-color:var(--accent)}
 .size b{font:800 1.15rem var(--font-display)}
 .size span{font-size:.78rem; color:var(--muted)}
-.stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:1px; background:var(--line); border:1px solid var(--line); border-radius:10px; overflow:hidden}
-.stat{background:var(--panel); padding:9px 11px} .stat b{display:block; font:700 1.05rem var(--font-display)} .stat span{font-size:.78rem; color:var(--muted)}
+.stats{display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,130px),1fr)); gap:1px; border:1px solid var(--line); border-radius:10px; overflow:hidden}
+#preview .stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+.stat{box-shadow:0 0 0 1px var(--line); padding:9px 11px} .stat b{display:block; font:700 1.05rem var(--font-display)} .stat span{font-size:.78rem; color:var(--muted)}
 .ladder td,.ladder th{padding:6px 8px; font-size:.86rem; white-space:nowrap}
 .ladder .g-main{box-shadow:inset 0 2px 0 var(--main)} .ladder .g-second{box-shadow:inset 0 2px 0 var(--second)}
 .sep{border-left:1px solid var(--line)}
@@ -105,7 +188,7 @@ dialog::backdrop{background:rgba(0,0,0,.55)}
   <header class="bar">
     <a class="brand" href="/console/"><i></i>playcity <small>console</small></a>
     <nav id="nav" hidden aria-label="Console sections">
-      <button data-go="cups">Cups</button><button data-go="templates">Templates</button><button data-go="economy">Economy</button><button data-go="audit">Audit</button><button data-go="staff" data-owner>Staff</button>
+      <button data-go="cups">Cups</button><button data-go="templates">Templates</button><button data-go="model">Model</button><span class="navgap" aria-hidden="true"></span><button data-go="economy">Economy</button><button data-go="audit">Audit</button><button data-go="staff" data-owner>Staff</button>
     </nav>
     <span class="who" id="who"></span>
     <button class="btn" id="lockBtn" hidden>Lock</button>
@@ -114,6 +197,8 @@ dialog::backdrop{background:rgba(0,0,0,.55)}
 </div>
 
 <dialog id="dlg"><form method="dialog" class="stack"><h2 id="dlgTitle"></h2><div id="dlgBody"></div><div class="row" style="justify-content:flex-end"><button class="btn" value="cancel">Cancel</button><button class="btn primary" id="dlgOk" value="ok">OK</button></div></form></dialog>
+
+<div id="tip" role="status" hidden></div>
 
 <script type="module" src="./console.js"></script>
 </body>
