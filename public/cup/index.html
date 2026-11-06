@@ -81,6 +81,11 @@ details summary{cursor:pointer; font-weight:600}
 .pill{font:500 .72rem var(--font-mono); letter-spacing:.06em; text-transform:uppercase; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--muted)}
 .pill.w{color:var(--good); border-color:rgba(127,214,154,.4)} .pill.l{color:var(--second); border-color:rgba(34,160,148,.5)} .pill.gf{color:var(--accent); border-color:rgba(255,194,71,.5)}
 .check{display:flex; gap:10px; align-items:flex-start} .check input{width:20px; height:20px; margin-top:2px}
+.ticket{display:grid; gap:10px; padding-top:12px; border-top:1px solid var(--line)}
+.ticket h3{margin:0; font:700 1.02rem var(--font-display)}
+.steps{margin:0; padding-left:20px; display:grid; gap:4px; color:var(--muted)}
+.next{margin:0; font:700 1.05rem var(--font-body); font-variant-numeric:tabular-nums}
+.next b{font:800 1.4rem var(--font-display); color:var(--accent)}
 [hidden]{display:none!important}
 @media (prefers-reduced-motion:no-preference){.bar i{transition:width .6s ease}}
 </style>
@@ -166,7 +171,10 @@ details summary{cursor:pointer; font-weight:600}
     return { ok: r.ok, status: r.status, j };
   }
 
+  const clock = (ms) => { const s = Math.max(0, Math.ceil(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
   function countdown() {
+    const ni = $('nextIn');
+    if (ni) { const left = Number(ni.dataset.at) - Date.now(); ni.querySelector('b').textContent = clock(left); if (left <= 0) soon(); }
     const now = Date.now(), c = cup;
     const steps = [[c.registrationOpensAt, 'Entry opens in'], [c.registrationClosesAt, 'Entry closes in'], [c.checkInOpensAt, 'Check-in opens in'], [c.checkInClosesAt, 'Check-in closes in'], [c.startsAt, 'Round 1 in']];
     const next = steps.find(([t]) => t > now);
@@ -210,9 +218,9 @@ details summary{cursor:pointer; font-weight:600}
       else h = `<h2>Entry has closed</h2><p class="muted" style="margin:0">${c.state === 'running' ? 'The cup is under way.' : 'Look out for the next cup.'}</p>`;
     } else {
       const st = e.state;
-      if (st === 'entered') h = `<h2>You're in</h2><p class="muted" style="margin:0">${c.oversubscription === 'random-draw' ? `Seats are drawn when entry closes, ${esc(at(c.registrationClosesAt))}.` : 'Your seat is saved.'} Check in from ${esc(at(c.checkInOpensAt))}.</p>${strip(e)}`;
-      else if (st === 'waitlist') h = `<h2>You're on the waitlist</h2><p class="muted" style="margin:0">${e.draw_rank ? `Number ${n(e.draw_rank)} in line.` : ''} Check in when it opens: seats left by no-shows go to checked-in players in line. If no seat comes free, your stake comes back.</p>${checkInBtn(e, now)}${strip(e)}`;
-      else if (st === 'seated') h = `<h2>${e.checked_in_at ? "You're checked in" : 'Your seat is drawn'}</h2><p class="muted" style="margin:0">${e.checked_in_at ? `Round 1 starts ${esc(at(c.startsAt))}.` : `Check in between ${esc(at(c.checkInOpensAt))} and ${esc(at(c.checkInClosesAt))}, or your seat goes to the waitlist${c.noShowRefund === 'full' ? ' and your stake comes back' : ''}.`}</p>${checkInBtn(e, now)}${strip(e)}`;
+      if (st === 'entered') h = `<h2>You're in</h2><p class="muted" style="margin:0">${c.oversubscription === 'random-draw' ? `Seats are drawn when entry closes, ${esc(at(c.registrationClosesAt))}.` : 'Your seat is saved.'} Check in from ${esc(at(c.checkInOpensAt))}.</p>${strip(e)}${ticket()}`;
+      else if (st === 'waitlist') h = `<h2>You're on the waitlist</h2><p class="muted" style="margin:0">${e.draw_rank ? `Number ${n(e.draw_rank)} in line.` : ''} Check in when it opens: seats left by no-shows go to checked-in players in line. If no seat comes free, your stake comes back.</p>${checkInBtn(e, now)}${strip(e)}${ticket()}`;
+      else if (st === 'seated') h = `<h2>${e.checked_in_at ? "You're checked in" : 'Your seat is drawn'}</h2><p class="muted" style="margin:0">${e.checked_in_at ? `Round 1 starts ${esc(at(c.startsAt))}.` : `Check in between ${esc(at(c.checkInOpensAt))} and ${esc(at(c.checkInClosesAt))}, or your seat goes to the waitlist${c.noShowRefund === 'full' ? ' and your stake comes back' : ''}.`}</p>${checkInBtn(e, now)}${strip(e)}${ticket()}`;
       else if (st === 'playing' && live) h = liveHtml(live, e);
       else if (st === 'finished') h = `<h2>${e.finish === 'champion' ? 'Champion!' : 'Your cup is over'}</h2><p class="muted" style="margin:0">${finishText(e.finish)}</p>${strip(e)}`;
       else if (st === 'no-show') h = `<h2>You missed check-in</h2><p class="muted" style="margin:0">${c.noShowRefund === 'full' ? 'Your stake is back in your wallet.' : 'Stakes are not refunded for missed check-in in this cup.'}</p>`;
@@ -220,10 +228,14 @@ details summary{cursor:pointer; font-weight:600}
       else h = `<h2>You're in</h2>${strip(e)}`;
     }
     box.innerHTML = h; box.hidden = false;
+    if ($('notify')) drawNotify();
     $('enterBtn')?.addEventListener('click', enter);
     $('checkBtn')?.addEventListener('click', checkIn);
     $('scBtn')?.addEventListener('click', buy);
   }
+  /* The ticket (right after entering, and until the cup starts): the moment to make sure we can reach you. */
+  const ticket = () => `<div class="ticket"><h3>Don't miss your table</h3><div id="notify"><p class="muted" style="margin:0">Checking this device…</p></div>
+    <div class="row"><a class="btn" href="/api/cups/${encodeURIComponent(cup.slug)}/calendar">Add to calendar</a></div></div>`;
   const checkInBtn = (e, now) => (!e.checked_in_at && now >= cup.checkInOpensAt && now < cup.checkInClosesAt) ? `<button class="btn primary" id="checkBtn">I'm here</button><p class="msg" id="m"></p>` : '';
   function liveHtml(l, e) {
     if (l.offer && !l.offer.bought) {
@@ -234,10 +246,19 @@ details summary{cursor:pointer; font-weight:600}
     if (l.table?.done) {
       const out = !!l.finish, gf = l.table.draw === 'GF';
       const head = l.table.place === 1 ? 'You won your table!' : `You finished ${['', '1st', '2nd', '3rd', '4th'][l.table.place] || ''} at your table`;
-      const next = gf ? 'Grand Final prizes are paid when the cup ends.' : out ? 'Your cup is over.' : l.paused ? "You're through. The cup is paused." : "You're through. The next round starts after the break.";
-      return `<h2>${head}</h2><p class="muted" style="margin:0">${next}</p>${strip(e)}`;
+      const next = gf ? 'Grand Final prizes are paid when the cup ends.' : out ? 'Your cup is over.' : l.paused ? "You're through. The cup is paused." : "You're through.";
+      return `<h2>${head}</h2><p class="muted" style="margin:0">${next}</p>${gf || out ? '' : nextRound(l)}${strip(e)}`;
     }
-    return `<h2>Waiting for the next round</h2>${strip(e)}`;
+    return `<h2>Waiting for the next round</h2>${nextRound(l)}${strip(e)}`;
+  }
+  /* Between rounds: when the next table comes, and (main draw) what it pays. */
+  function nextRound(l) {
+    const v = data.live || {}, now = Date.now();
+    if (l.paused || v.paused) return `<p class="muted" style="margin:0">The cup is paused. The next round starts when it resumes.</p>`;
+    const row = l.table?.draw === 'W' && data.schedule?.main ? data.schedule.main[v.wRound] : null;
+    const pays = row ? ` · 1st gets ${n(row.pay1)}` : '';
+    if (v.nextAt && v.nextAt > now) return `<p class="next" id="nextIn" data-at="${v.nextAt}">Next table in <b>${clock(v.nextAt - now)}</b>${pays}</p>`;
+    return `<p class="muted" style="margin:0">The next round is seated once every table has finished, after a ${Math.round(cup.breakSec / 60)}-minute break${pays}. We'll tell you when your table is ready.</p>`;
   }
   const finishText = (f) => f === 'champion' ? 'You won the Grand Final.' : /^grand-final/.test(f || '') ? `You finished ${f.split('-').pop()}${['', 'st', 'nd', 'rd', 'th'][Number(f.split('-').pop())] || 'th'} in the Grand Final.` : /^main-r/.test(f || '') ? `You went out in main-draw round ${f.slice(6)}.` : 'You went out in Second Chance.';
 
@@ -329,7 +350,8 @@ details summary{cursor:pointer; font-weight:600}
     const hist = me?.history || [];
     const rows = hist.length ? `<div class="scroll"><table><thead><tr><th>Round</th><th>Table</th><th class="n">Place</th><th class="n">Paid</th></tr></thead><tbody>${hist.map((x) => `<tr><td>${x.draw === 'GF' ? 'Grand Final' : 'Round ' + x.slot}</td><td>${pill(x.draw)}</td><td class="n">${PLACE[x.place] || x.place} of ${x.of}</td><td class="n">${x.draw === 'GF' ? '–' : n(x.pay)}</td></tr>`).join('')}</tbody></table></div>`
       : `<p class="muted" style="margin:0">Your tables show here as you play them.</p>`;
-    return `<h2>My cup</h2>${strip(me.entry)}${rows}<h2 style="margin-top:6px">Don't miss your table</h2><div id="notify"><p class="muted" style="margin:0">Checking this device…</p></div>
+    const notify = $('notify') ? '' : `<h2 style="margin-top:6px">Don't miss your table</h2><div id="notify"><p class="muted" style="margin:0">Checking this device…</p></div>`;   // shown on the ticket until the cup starts
+    return `<h2>My cup</h2>${strip(me.entry)}${rows}${notify}
       <h2 style="margin-top:6px">Share</h2><div id="shareBox"></div>`;
   }
   async function bracketPanel() {
@@ -423,7 +445,13 @@ details summary{cursor:pointer; font-weight:600}
     let push = '';
     const can = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
     const key = can ? (await api('GET', '/api/push/key')).j.key : null;
-    if (!can) push = `<p class="muted" style="margin:0">This browser can't show notifications. On an iPhone, add playcity to your Home Screen, then open it from there.</p>`;
+    const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const installed = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+    const inApp = /FBAN|FBAV|Instagram|Line\/|; wv\)/.test(navigator.userAgent);
+    if (inApp) push = `<p class="muted" style="margin:0">You're in an app's built-in browser, which can't show notifications. Open this page in Chrome or Safari to turn them on.</p>`;
+    else if (ios && !installed) push = `<p style="margin:0">On an iPhone, notifications only reach the playcity app on your Home Screen:</p>
+      <ol class="steps"><li>Tap the Share button in Safari.</li><li>Choose <b>Add to Home Screen</b>.</li><li>Open playcity from your Home Screen, come back to this cup and turn notifications on.</li></ol>`;
+    else if (!can) push = `<p class="muted" style="margin:0">This browser can't show notifications. Keep this page open during the cup, or open it in Chrome or Safari.</p>`;
     else if (!key) push = '';
     else {
       const reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => null);
@@ -469,8 +497,8 @@ details summary{cursor:pointer; font-weight:600}
     ws.onmessage = (e) => {
       if (e.data === 'pong') return;
       let m; try { m = JSON.parse(e.data); } catch { return; }
-      if (['table', 'result', 'checkin', 'cup', 'gf'].includes(m.t)) soon();
-      else if (m.t === 'live' && tab !== 'me') soon();
+      if (['table', 'result', 'checkin', 'cup', 'gf', 'nudge', 'reminder'].includes(m.t)) soon();
+      else if (m.t === 'live' && m.live) { data.live = m.live; drawAction(); if (tab !== 'me') drawPanel(); }
     };
     ws.onclose = (e) => {
       clearInterval(ping); hubUp = false; hub = null;

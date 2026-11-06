@@ -127,6 +127,17 @@ h1 em{font-style:normal; color:var(--accent)}
 .inst-go:focus-visible,.inst-x:focus-visible{outline:3px solid var(--accent); outline-offset:2px}
 @media (max-width:520px){.inst{flex-wrap:wrap}.inst-body{flex-basis:calc(100% - 100px)}.inst-go{margin-left:54px}}
 @media (prefers-reduced-motion:reduce){.inst{transition:none}}
+/* Whot Cup, above the games: your own cup when you're in one, and the cup the console has put on the home page. */
+.cupban{display:grid; grid-template-columns:auto minmax(0,1fr) auto; grid-template-rows:auto auto; gap:4px 16px; align-items:center; padding:16px 18px; border-radius:18px; text-decoration:none; color:inherit;
+  background:linear-gradient(120deg,rgba(176,48,63,.35),rgba(176,48,63,.08) 60%),var(--panel); border:1px solid rgba(226,86,107,.45)}
+.cupban[hidden]{display:none}
+.cupban.mine{background:linear-gradient(120deg,rgba(255,194,71,.22),rgba(255,194,71,.05) 60%),var(--panel); border-color:rgba(255,194,71,.5)}
+.cupban:hover,.cupban:focus-visible{border-color:var(--accent); outline:none}
+.cupban .wcard{grid-column:1; grid-row:1/span 2; width:40px; height:56px; border-radius:7px; background:#b0303f; display:grid; place-items:center; font:800 .7rem var(--font-display); letter-spacing:.04em; color:#fff; box-shadow:0 6px 16px -8px #000}
+.cupban .ttl{grid-column:2; grid-row:1; font:800 1.1rem/1.2 var(--font-display); letter-spacing:-.01em; align-self:end}
+.cupban .sub{grid-column:2; grid-row:2; color:var(--muted); font-size:.92rem; align-self:start; font-variant-numeric:tabular-nums}
+.cupban .go{grid-column:3; grid-row:1/span 2; font-weight:700; color:var(--accent-ink); background:var(--accent); border-radius:999px; padding:9px 16px; white-space:nowrap}
+@media (max-width:560px){ .cupban{grid-template-columns:auto minmax(0,1fr)} .cupban .go{grid-column:1/-1; grid-row:3; text-align:center; margin-top:8px} }
 </style></head>
 <body>
 <div class="page">
@@ -143,6 +154,9 @@ h1 em{font-style:normal; color:var(--accent)}
     <h1 id="t">Pick a game.<br><em>Send the link.</em></h1>
     <p class="lede">Quick realtime games for friends. Nothing to install, no accounts, and nothing is saved when you leave.</p>
   </section>
+
+  <a class="cupban mine" id="myCup" href="/cup/" hidden><span class="wcard" aria-hidden="true">WHOT</span><b class="ttl" id="myCupT"></b><span class="sub" id="myCupS" aria-live="polite"></span><span class="go" id="myCupGo">My cup</span></a>
+  <a class="cupban" id="cupBan" href="/cup/" hidden><span class="wcard" aria-hidden="true">WHOT</span><b class="ttl" id="cupBanT"></b><span class="sub" id="cupBanS"></span><span class="go" id="cupBanGo">See the cup</span></a>
 
   <ul class="games" aria-label="Games">
     <li>
@@ -231,6 +245,48 @@ h1 em{font-style:normal; color:var(--accent)}
 
   <footer class="foot"><span>Open a link to join</span><span>No accounts</span><span>Nothing saved</span><span>Works on phones</span></footer>
 </div>
+<script>
+/* Whot Cup on the home page.
+   Your cup: a signed-in player with an entry in a cup still to play is pointed straight back to it (the installed
+   app opens here). The banner: only a cup the console has switched on (edge-cached for 5 s). */
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var n = function (x) { return Number(x).toLocaleString('en-NG'); };
+  var at = function (ms) { return new Date(ms).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }); };
+  var clock = function (ms) { var s = Math.max(0, Math.ceil(ms / 1000)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+  var get = function (u) { return fetch(u, { credentials: 'same-origin', cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : { cups: [] }; }).catch(function () { return { cups: [] }; }); };
+  var mine = null, tick = 0;
+  function drawMine() {
+    var m = mine, now = Date.now(), live = m.live || {}, sub, go, title = m.name;
+    if (m.state === 'running') {
+      title = 'Your cup is live: ' + m.name;
+      sub = live.nextAt && live.nextAt > now ? 'Next round in ' + clock(live.nextAt - now) : live.slot ? 'Round ' + live.slot + ' is on' : 'Round 1 is about to start';
+      go = 'Go to my cup';
+    } else if (m.state === 'check-in' && !m.checkedIn && m.entry !== 'entered') {
+      title = 'Check in for ' + m.name; sub = 'Tap "I\'m here" before ' + new Date(m.checkInClosesAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + ' to keep your seat'; go = 'Check in';
+    } else {
+      title = "You're in: " + m.name; sub = 'Starts ' + at(m.startsAt) + (m.checkedIn ? ' · checked in' : ' · check in ' + Math.round((m.startsAt - m.checkInOpensAt) / 60000) + ' min before'); go = 'My cup';
+    }
+    $('myCupT').textContent = title; $('myCupS').textContent = sub; $('myCupGo').textContent = go;
+    var b = $('myCup'); b.href = '/cup/?c=' + encodeURIComponent(m.slug); b.hidden = false;
+  }
+  Promise.all([get('/api/me/cups'), get('/api/cups')]).then(function (r) {
+    mine = (r[0].cups || [])[0] || null;
+    if (mine) { drawMine(); if (mine.state === 'running') tick = setInterval(function () { if (!document.hidden) drawMine(); }, 1000); }
+    var live = ['registration', 'closed', 'check-in', 'running', 'scheduled'];
+    var c = (r[1].cups || []).filter(function (x) { return x.promoted && live.indexOf(x.state) >= 0 && !(mine && x.slug === mine.slug); })[0];
+    if (!c) return;
+    var when = at(c.state === 'scheduled' ? c.registrationOpensAt : c.startsAt);
+    $('cupBanT').textContent = c.name + ' · ' + new Date(c.startsAt).toLocaleString([], { weekday: 'long', hour: 'numeric', minute: '2-digit' });
+    $('cupBanS').textContent =
+      c.state === 'scheduled' ? 'Entry opens ' + when + ' · ' + n(c.entryFee) + ' coins · top two at every table get paid'
+      : c.state === 'running' ? 'Live now · watch the leaders'
+      : n(c.entryFee) + ' coins to enter · ' + n(c.entries) + ' of ' + n(c.capacity) + ' seats taken · top two at every table get paid';
+    $('cupBanGo').textContent = c.state === 'running' ? 'Watch' : c.state === 'registration' ? 'Enter the cup' : 'See the cup';
+    var b = $('cupBan'); b.href = '/cup/?c=' + encodeURIComponent(c.slug); b.hidden = false;
+  });
+})();
+</script>
 <script>
 /* What is open right now: seats at Whot tables, and Flick players waiting for an opponent.
    One small cached request (/api/open); it pauses while the tab is hidden and stops after 10 idle minutes. */

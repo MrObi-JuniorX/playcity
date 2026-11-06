@@ -15,7 +15,8 @@ const ERR = {
   locked: "Your console is locked. Unlock it with your passkey.", "not-staff": "This account isn't on the staff list.", "not-allowed": "Your role can't do that.",
   stale: "Someone changed this cup since you opened it. Reload to see their changes.", frozen: "Registration has opened, so the settings are frozen.",
   "unpublish-first": "Unpublish the cup before editing it.", "slug-taken": "That web address is taken.", "not-your-own": "You can't countersign a cup you created or last edited.",
-  "cancel-needs-refunds": "Once registration opens, cancelling must refund entries. That arrives with registration (Phase 4).",
+  "cancel-needs-refunds": "Cancelling this cup has to refund its entries. Try again in a moment.",
+  "publish-first": "Publish the cup first.", "already-over": "This cup is over.",
   "passkey-failed": "The passkey check didn't pass. Try again.", "no-passkey": "No passkey is set up yet.", "name-taken": "A template with that name exists.",
   "not-yourself": "You can't remove yourself.", "no-player": "No player has that id.", "not-a-draft": "Only drafts that were never published can be deleted.",
 };
@@ -155,14 +156,15 @@ function drawEditor() {
   main.innerHTML = `<div class="stack">
     <div class="spread"><div class="stack" style="gap:6px"><a href="#cups" class="muted" style="text-decoration:none">← Cups</a><h1 id="cupTitle">${esc(c.name)}</h1>
       <div class="row"><span class="chip ${esc(c.state)}">${esc(c.state)}</span>${c.frozen ? '<span class="chip frozen">frozen</span>' : ""}<span class="muted mono">v${c.version}</span>
-      ${c.configHash ? `<span class="muted mono" title="SHA-256 of the published settings">#${esc(c.configHash.slice(0, 12))}</span>` : ""}${c.countersignedBy ? '<span class="chip scheduled">countersigned</span>' : ""}</div></div>
+      ${c.configHash ? `<span class="muted mono" title="SHA-256 of the published settings">#${esc(c.configHash.slice(0, 12))}</span>` : ""}${c.countersignedBy ? '<span class="chip scheduled">countersigned</span>' : ""}<span class="chip home" id="homeChip" ${c.promoted ? "" : "hidden"}>on the home page</span></div></div>
       <div class="row" id="actions"></div></div>
-    ${c.frozen ? `<p class="banner">Registration has opened, so these settings are frozen. Pause, cancel and check-in changes come with registration (Phase 4).</p>` : c.state === "scheduled" ? `<p class="banner">Published. Unpublish to edit; settings freeze when registration opens (${esc(when(c.config.registrationOpensAt))}).</p>` : ""}
+    ${c.frozen ? `<p class="banner">Registration has opened, so these settings are frozen. You can still pause, resume or cancel the cup, and switch its home page banner.</p>` : c.state === "scheduled" ? `<p class="banner">Published. Unpublish to edit; settings freeze when registration opens (${esc(when(c.config.registrationOpensAt))}).</p>` : ""}
     <p class="msg" id="edMsg" role="status"></p>
+    <div class="card" id="shareCard"></div>
     <div class="card" id="livePanel" hidden></div>
     <div class="editor"><form id="form" class="stack" novalidate>${groups.map((g) => `<fieldset ${ro ? "disabled" : ""}><legend>${esc(g)}</legend><div class="fields">${FIELDS.filter((f) => f.group === g).map(fieldHtml).join("")}</div></fieldset>`).join("")}</form>
     <aside class="preview stack" id="preview" aria-live="polite"><div class="card"><p class="muted">Working out the payouts…</p></div></aside></div></div>`;
-  drawActions();
+  drawActions(); drawShare();
   if (c.state !== "draft") loadLive();
   $("#form").addEventListener("input", onInput);
   $("#form").addEventListener("change", onInput);
@@ -268,6 +270,36 @@ async function act(what) {
     const r = await api("POST", "/api/console/templates", { name: v.name, fromCup: c.id });
     msg.textContent = r.ok ? "Template saved." : errText(r.j); msg.className = r.ok ? "msg good" : "msg bad";
   }
+}
+
+/* ---------- sharing the registration link, and the home page banner ---------- */
+function drawShare() {
+  const c = editing.cup, box = $("#shareCard"); if (!box) return;
+  const admin = me.roles.some((x) => x === "owner" || x === "cup-admin");
+  const slug = editing.config.slug || c.slug, url = `${location.origin}/cup/?c=${encodeURIComponent(slug)}`;
+  const published = !["draft", "cancelled", "settled"].includes(c.state), over = ["cancelled", "settled"].includes(c.state);
+  const canPromote = admin && published;
+  box.innerHTML = `<h2>Share and promote</h2>
+    <div class="field wide"><label for="regLink">Registration link</label>
+      <div class="row"><input id="regLink" readonly value="${esc(url)}" style="flex:1;min-width:0" aria-describedby="regHelp">
+        <button class="btn" type="button" id="copyLink" ${published ? "" : "disabled"}>Copy link</button>
+        ${navigator.share ? `<button class="btn" type="button" id="shareLink" ${published ? "" : "disabled"}>Share</button>` : ""}
+        ${published ? `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener">Open</a>` : ""}</div>
+      <div class="help" id="regHelp">${published ? "Players who open it see the cup page with the Enter button once registration opens. Invite links from players add <span class=\"mono\">&ref=</span> so friends show up on each other's leaderboards." : over ? "This cup is over; the link shows its results." : "The link works once the cup is published. It follows the web address in Identity."}</div></div>
+    <label class="check"><input type="checkbox" id="promoteOn" ${c.promoted ? "checked" : ""} ${canPromote ? "" : "disabled"}> Show this cup's banner on the home page</label>
+    <div class="help">${published ? "Above the games, for every visitor: the countdown, seats taken and the Enter or Watch button. Switch it on or off any time; it doesn't change the cup. Players already in a cup always see their own." : "Publish the cup to put it on the home page."}</div>
+    <p class="msg" id="shareMsg" role="status"></p>`;
+  const say = (t, ok = true) => { const m = $("#shareMsg"); m.textContent = t; m.className = ok ? "msg good" : "msg bad"; };
+  $("#copyLink").onclick = async () => { try { await navigator.clipboard.writeText(url); say("Link copied."); } catch { $("#regLink").select(); say("Press Ctrl+C or ⌘C to copy the selected link."); } };
+  const sh = $("#shareLink"); if (sh) sh.onclick = async () => { try { await navigator.share({ title: c.name, text: `Enter ${c.name} on playcity`, url }); } catch { /* cancelled */ } };
+  $("#promoteOn").onchange = async (e) => {
+    const on = e.target.checked;
+    const r = await api("POST", `/api/console/cups/${c.id}/promote`, { on });
+    if (!r.ok) { e.target.checked = !on; say(errText(r.j), false); return; }
+    editing.cup = { ...editing.cup, promoted: r.j.cup.promoted };
+    say(on ? "The banner is on the home page (it can take a few seconds to show)." : "The banner is off the home page.");
+    const chip = $("#homeChip"); if (chip) chip.hidden = !r.j.cup.promoted;
+  };
 }
 
 /* ---------- a published cup, live ---------- */

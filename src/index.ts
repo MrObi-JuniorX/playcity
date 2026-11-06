@@ -9,7 +9,7 @@ import { walletRoute } from "./wallet/routes";
 import { nightlyReconcile } from "./wallet/ledger";
 import { consoleRoute } from "./console/routes";
 import { consoleCleanup } from "./console/access";
-import { cupRoute, cupTableRoute, cupHubRoute } from "./cup/routes";
+import { cupRoute, cupTableRoute, cupHubRoute, myCups } from "./cup/routes";
 import { pushRoute } from "./push/routes";
 import { sharePage } from "./cup/share";
 
@@ -40,6 +40,7 @@ export default {
     const path = url.pathname;
     try {
       if (path === "/api/ice") return await ice(env);
+      if (path === "/api/me/cups" && request.method === "GET") return await myCups(env, request);
       if (path.startsWith("/api/auth/") || path === "/api/me" || path.startsWith("/api/dev/")) {
         const r = await authRoute(request, env, path);
         if (r) return r;

@@ -42,6 +42,8 @@ interface State {
   slotDoneAt: number | null;
   scBuyers: number;
   late: number;
+  reminded?: boolean;     // the "starts in 2 hours" reminder has gone
+  nudgeAt?: number | null; // when to send "your table is waiting" for the slot just seated (external mode)
 }
 
 interface TableRow { code: string; slot: number; draw: Draw | "GF"; players: string; n: number; final: number; pay1: number; pay2: number; deadline: number; result: string | null; late: number }
@@ -50,6 +52,8 @@ const KEY_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const tableCode = () => Array.from(crypto.getRandomValues(new Uint8Array(10)), b => KEY_CHARS[b & 31]).join("");
 const RETAIN_MS = 7 * 24 * 3600_000;      // keep the object's own tables a week after settling; D1 keeps the record
 const BATCH = 100;                        // ledger transfers per D1 batch
+const REMIND_MS = 2 * 3600_000;           // "starts in 2 hours"
+const NUDGE_MS = 30_000;                  // the second "your table is ready", for players who haven't sat down
 
 export type DirectorEnv = AuthEnv & { CUP_TABLE_MODE?: string };
 
@@ -136,6 +140,8 @@ export class CupDirector extends DurableObject<DirectorEnv> {
       s = this.state()!;
       if (`${s.phase}:${s.slot}:${s.gfCode}` === before) break;
     }
+    if (!s.reminded && (s.phase === "registration" || s.phase === "closed") && now >= c.startsAt - REMIND_MS && now < c.checkInOpensAt) await this.remind(s, c);
+    if (s.phase === "running" && s.nudgeAt && now >= s.nudgeAt) await this.nudge(s, c);
     await this.flushNotes(s.cupId);
     await this.setNextAlarm(s, c, now);
     return { phase: s.phase, slot: s.slot };
@@ -146,6 +152,8 @@ export class CupDirector extends DurableObject<DirectorEnv> {
     if (s.phase === "scheduled") due.push(c.registrationOpensAt);
     if (s.phase === "registration") due.push(c.registrationClosesAt);
     if (s.phase === "closed") due.push(c.checkInOpensAt);
+    if (!s.reminded && (s.phase === "registration" || s.phase === "closed") && c.startsAt - REMIND_MS > now) due.push(c.startsAt - REMIND_MS);
+    if (s.phase === "running" && s.nudgeAt) due.push(s.nudgeAt);
     if (s.phase === "check-in") due.push(c.startsAt - c.checkInCloseBeforeStartSec * 1000);
     if (s.phase === "running") {
       if (s.slot === 0) due.push(c.startsAt);
@@ -343,7 +351,7 @@ export class CupDirector extends DurableObject<DirectorEnv> {
   /** After seating: in simulate mode every table finishes at once; then publish progress. */
   private async afterSeating(s: State, c: CupConfig, now: number) {
     this.flushCodes(s.slot);
-    if (s.mode === "external") await this.tellSeated(s, c);
+    if (s.mode === "external") { await this.tellSeated(s, c); s.nudgeAt = now + NUDGE_MS; this.save(s); }
     if (s.mode === "simulate") {
       const items = [];
       for (const t of this.tablesOf(s.slot)) items.push({ t, places: await this.randomOrder(t), late: false });
@@ -591,6 +599,31 @@ export class CupDirector extends DurableObject<DirectorEnv> {
     }
   }
 
+  /** Two hours before the start: everyone with an entry hears it's coming, and what they need to do (push only;
+      SMS stays for check-in). Once per cup. */
+  private async remind(s: State, c: CupConfig) {
+    s.reminded = true; this.save(s);
+    const rows = (await this.env.DB.prepare("SELECT player_id, state FROM registrations WHERE cup_id = ? AND state IN ('entered', 'seated', 'waitlist')").bind(s.cupId).all<{ player_id: string; state: string }>()).results;
+    const mins = Math.round((c.startsAt - c.checkInOpensAt) / 60_000);
+    for (const r of rows) {
+      const body = r.state === "waitlist" ? `You're on the waitlist. Check in ${mins} minutes before the start: seats left by no-shows go to checked-in players.`
+        : r.state === "entered" ? `Seats are drawn when entry closes. Check-in opens ${mins} minutes before the start.`
+        : `Your seat is saved. Check in ${mins} minutes before the start to keep it.`;
+      this.notes.push({ player: r.player_id, msg: { t: "reminder" }, note: { title: `${c.name} starts in 2 hours`, body, url: `/cup/?c=${c.slug}`, tag: `remind-${s.cupId}`, ttl: 3600 } });
+    }
+  }
+
+  /** Thirty seconds after seating: a second "your table is ready" for the tables still waiting to deal. It replaces
+      the first notification (same tag), and the app doesn't show it to someone who already has the table open. */
+  private async nudge(s: State, c: CupConfig) {
+    s.nudgeAt = null; this.save(s);
+    for (const t of this.tablesOf(s.slot)) {
+      if (t.result) continue;
+      for (const p of JSON.parse(t.players) as string[]) this.notes.push({ player: p, msg: { t: "nudge", slot: s.slot, code: t.code },
+        note: { title: "Your table is waiting", body: "The cards are dealt in about 30 seconds. Sit down now, or the computer plays your cards.", url: `/whot/?cup=${c.slug}`, tag: `table-${s.cupId}`, ttl: 60 } });
+    }
+  }
+
   /** Send what was gathered: at most one call per gate. A gate that fails only costs its players a message. */
   private async flushNotes(cupId: string) {
     const events = this.notes, all = this.noteAll;
@@ -605,7 +638,9 @@ export class CupDirector extends DurableObject<DirectorEnv> {
   }
   private liveOf(s: State) {
     const t = s.slot ? this.tablesOf(s.slot) : [];
-    return { phase: s.phase, paused: s.paused, slot: s.slot, field: s.N, mainLeft: s.W.length, tables: t.length, finished: t.filter(x => x.result).length, late: s.late, grandFinal: !!s.gfCode, scBuyers: s.scBuyers };
+    // When the next round seats (the break after the last table), so pages can count down to it.
+    const nextAt = s.phase === "running" && s.slotDoneAt && !s.paused ? s.slotDoneAt + this.cfg().breakSec * 1000 : null;
+    return { phase: s.phase, paused: s.paused, slot: s.slot, wRound: s.wRound, nextAt, field: s.N, mainLeft: s.W.length, tables: t.length, finished: t.filter(x => x.result).length, late: s.late, grandFinal: !!s.gfCode, scBuyers: s.scBuyers };
   }
 
   /** For the console: everything about the cup right now, including late tables. */

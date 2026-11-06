@@ -37,10 +37,18 @@ self.addEventListener('push', e => {
   let d = {};
   try { d = e.data ? e.data.json() : {}; } catch (err) { return; }
   if (!d || typeof d.title !== 'string') return;
-  e.waitUntil(self.registration.showNotification(d.title, {
-    body: typeof d.body === 'string' ? d.body : '', tag: typeof d.tag === 'string' ? d.tag : 'playcity', renotify: true,
-    icon: '/icons/icon-192.png', badge: '/icons/icon-192.png', data: { url: typeof d.url === 'string' ? d.url : '/' },
-  }));
+  const url = typeof d.url === 'string' ? d.url : '/';
+  e.waitUntil((async () => {
+    // Already looking at it (your table is open on screen): nothing to tell you.
+    let path = '/'; try { path = new URL(url, location.origin).pathname; } catch (err) { /* keep the home page */ }
+    for (const c of await self.clients.matchAll({ type: 'window', includeUncontrolled: true })) {
+      if (c.visibilityState === 'visible' && new URL(c.url).pathname === path) return;
+    }
+    await self.registration.showNotification(d.title, {
+      body: typeof d.body === 'string' ? d.body : '', tag: typeof d.tag === 'string' ? d.tag : 'playcity', renotify: true,
+      icon: '/icons/icon-192.png', badge: '/icons/icon-192.png', data: { url },
+    });
+  })());
 });
 self.addEventListener('notificationclick', e => {
   e.notification.close();

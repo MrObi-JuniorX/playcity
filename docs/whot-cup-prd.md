@@ -209,7 +209,7 @@ Screens and copy follow the player journey doc. Requirements that shape the buil
 - **PX-1** Cup page: countdown, seat counter, entry, prize ladder (estimated, then exact), schedule in local time, friends who entered, verifiable seeds once published.
 - **PX-2** Hub between rounds: My cup, Bracket, Leaderboards (this cup, friends), Watch. *Cities and season boards were dropped for now (2026-11-05): players have no city, and no season is defined.*
 - **PX-3** Result cards for every outcome, always showing this table's pay and the cup net. A net loss is never called a win.
-- **PX-4** Notifications: Web Push (PWA) for "check-in open", "your table is ready", "Second Chance offer" and "Grand Final live". SMS only for check-in, and only when the player opted in.
+- **PX-4** Notifications: Web Push (PWA) for "starts in 2 hours", "check-in open", "your table is ready" (at seating, and again 30 s later), "Second Chance offer" and "Grand Final live". SMS only for check-in, and only when the player opted in. A notification isn't shown when the page it points to is already on screen.
 - **PX-5** Share cards rendered on demand: entered, round reached, champion. Each carries a link to the cup or the next cup.
 - **PX-6** Accessibility: every result announced to screen readers, every timer readable as text, reduced motion respected.
 
@@ -221,7 +221,7 @@ Screens and copy follow the player journey doc. Requirements that shape the buil
 
 ### 6.9 Admin console (AD)
 - **AD-1** Allow-listed staff sign in with phone plus a second factor (a passkey).
-- **AD-2** Cups: create from a template, edit, run the model, see publish checks, publish, duplicate.
+- **AD-2** Cups: create from a template, edit, run the model, see publish checks, publish, duplicate. Copy or share each cup's registration link, and switch its home page banner on or off.
 - **AD-3** Live view: state, slot, tables running and late, connection counts, SC take-up, error rate, cost meter.
 - **AD-4** Safety switches: pause, resume, extend check-in, cancel with refunds, void a table, re-seat a round.
 - **AD-5** Integrity queue (section 8.3): flags, evidence, decision (clear, hold, void, ban), notes.
@@ -333,7 +333,7 @@ Rough cost at 1,024 players: about 1,000 tables × worst case $0.0014 = $1.40 of
 | `otp_requests` | phone_hmac, ip_hash, country, created_at, attempts (TTL 24 h) |
 | `accounts` | id, kind (player, platform, issuer, cup, sponsor), owner, currency, balance (CHECK ≥ 0 except the issuer), last_topup_day |
 | `ledger` | id, idem_key (unique), from_account, to_account, amount, currency, kind, player_id, cup_id, memo, created_at |
-| `cups` | id, slug, state, config_json (frozen), config_hash, schedule_json (frozen at check-in close), created_by |
+| `cups` | id, slug, state, config_json (frozen), config_hash, schedule_json (frozen at check-in close), created_by, promoted (home page banner, a console switch) |
 | `registrations` | cup_id, player_id, state, seat_draw_rank, checked_in_at, sc_bought_at, invited_by (indexed both ways for the friends board: one extra index row per entry, two when invited) |
 | `table_results` | cup_id, slot, draw, table_code, places_json, pay1, pay2, late, reported_at, stats_json (how it ended, moves, duration, points, cards and timeouts per place, forfeits; signed by the table, never a card) |
 | `seeds` | cup_id, slot, commitment, seed (null until revealed) |
@@ -452,7 +452,18 @@ Tick each box as it ships with its tests green. Every phase ends with the cost p
 - [x] Accessibility (PX-6): axe-core (WCAG 2 A and AA) finds no violations on the cup page or on a cup table's result. Results, Second Chance offers and the last minute of the table clock are announced to screen readers. The tabs work with arrow keys. Every timer is text. The existing reduced-motion handling covers the new screens.
 - [x] Tests (`test/worker/hub.test.ts`, `test/game/push.test.mjs`): every seated player hears their table with a token that works, then their result and offer, in one call per gate. A player who closed the app gets the table as a Web Push, sealed so the push service can't read it, and a dead subscription is deleted. A second device takes the hub over. Check-in texts reach only opted-in players no push reached. The bracket matches the director's tables, and the leaderboard, friends and your tables match the ledger to the coin. Share cards say how the player did and escape what they typed. Checked in headless Chrome against `wrangler dev`.
 
-**Before Phase 7 goes live:** apply migration `0006_notifications.sql` remotely. Run `npm run vapid` once and store the three values with `wrangler secret put` (keep the pair for good: a new pair makes every subscription stale). Check-in texts also need the SMS provider (section 13, question 1).
+### Keeping players informed (added 2026-11-06)
+From the notification-flow review ("Whot Cup Notification Flow"), built and tested:
+- [x] **The ticket asks.** Right after entering, and until the cup starts, the cup page's "You're in" card offers notifications, the check-in text and **Add to calendar**. The calendar file (`/api/cups/:slug/calendar`) has one event, with an alarm when check-in opens. On an iPhone not yet installed, the card gives the three Add to Home Screen steps instead, since a Safari tab can't get notifications. Inside an app's built-in browser it says to open the page in Chrome or Safari.
+- [x] **Back to your cup.** The home page shows a signed-in player's own cup above the games: "You're in: … · starts …", "Check in for …", or "Your cup is live · Next round in 3:12" (`/api/me/cups`). The installed app opens on the home page, so this is how returning players find their cup.
+- [x] **The home page banner is a console switch.** Off by default. Owners and cup admins switch it on or off for any published cup, at any time; it isn't one of the frozen settings, doesn't change the cup's version, and is audited (`cup.home-banner.on/off`; `cups.promoted`, migration `0007`). Players with a cup of their own see their line instead of the banner for that cup.
+- [x] **The registration link in the console.** Every cup shows its link (`/cup/?c=<slug>`) with Copy, Share and Open. It works once the cup is published.
+- [x] **A second "your table is ready"** 30 s after seating, for tables that haven't finished. It replaces the first notification, and the service worker doesn't show it to a player who already has the table on screen. At most 32 gate calls, like every other message.
+- [x] **The 2-hour reminder,** once per cup, to everyone with an entry, worded for their state (seat saved, seats still to be drawn, waitlist). Push only.
+- [x] **Next round countdown.** The cup's live state carries `nextAt` (when the break ends) and `wRound`. Between rounds, the cup page counts down "Next table in 3:12 · 1st gets 950" (main draw), and the home page line does the same.
+- Tests: `test/worker/reminders.test.ts` (banner switch, roles and audit; your cups; the calendar file; the reminder once; the nudge once; the next round's time). Checked in headless Chrome against `wrangler dev`: home page anonymous and entrant, the ticket on an iPhone and on Android, the countdown, and the console's link and switch with a virtual passkey. Not checked on real phones: notification permission prompts don't run in headless Chrome.
+
+**Before Phase 7 goes live:** apply migrations `0006_notifications.sql` and `0007_home_banner.sql` remotely. Run `npm run vapid` once and store the three values with `wrangler secret put` (keep the pair for good: a new pair makes every subscription stale). Check-in texts also need the SMS provider (section 13, question 1).
 
 ### Phase 8: removed
 *Removed from this release (2026-11-06): cheers (SP-2) and the Grand Final show (SP-3) aren't needed for the coin launch. Watching (SP-1) shipped in Phases 6 and 7: delayed, card-free watchers, and the Watch tab with the biggest stakes first. Phase numbers below are unchanged.*

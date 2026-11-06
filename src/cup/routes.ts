@@ -20,6 +20,8 @@ import { shareCardRoute } from "./share";
    GET  /api/cups/:slug/leaderboard     this cup's biggest winners (edge-cached 5 s)
    GET  /api/cups/:slug/friends         you and the players you're linked to by an invite, in this cup (signed in)
    GET  /api/cups/:slug/card/:player    a share card (SVG, src/cup/share.ts)
+   GET  /api/cups/:slug/calendar        the cup as a calendar event, with an alarm when check-in opens (.ics)
+   GET  /api/me/cups                    the signed-in player's cups still to play or in play (the home page's "your cup")
 
    Entering is one D1 transaction: the registration row, the seat counter (its CHECK refuses an entry past
    capacity) and the stake. A full cup or an empty wallet rolls the whole thing back, so nobody pays for a seat
@@ -27,7 +29,7 @@ import { shareCardRoute } from "./share";
 
 const PUBLIC_STATES = ["scheduled", "registration", "closed", "check-in", "running", "settled", "cancelled"];
 
-interface CupRow { id: string; slug: string; name: string; state: string; config_json: string; config_hash: string | null; estimate_json: string | null; schedule_json: string | null; live_json: string | null; cancel_reason: string | null; updated_at: number }
+interface CupRow { id: string; slug: string; name: string; state: string; config_json: string; config_hash: string | null; estimate_json: string | null; schedule_json: string | null; live_json: string | null; cancel_reason: string | null; updated_at: number; promoted: number }
 
 export async function cupRoute(req: Request, env: AuthEnv, path: string, ctx: ExecutionContext): Promise<Response | null> {
   if (path === "/api/cups" && req.method === "GET") return cached(req, ctx, () => listCups(env));
@@ -83,7 +85,7 @@ async function listCups(env: AuthEnv): Promise<Response> {
   const rows = await env.DB.prepare(`SELECT c.*, s.taken FROM cups c LEFT JOIN cup_seats s ON s.cup_id = c.id
     WHERE c.state IN ('scheduled', 'registration', 'closed', 'check-in', 'running') OR (c.state IN ('settled', 'cancelled') AND c.updated_at > ?)
     ORDER BY json_extract(c.config_json, '$.startsAt') LIMIT 20`).bind(Date.now() - 7 * 86_400_000).all<CupRow & { taken: number | null }>();
-  return json({ cups: rows.results.map(r => { const c = JSON.parse(r.config_json) as CupConfig; return { ...publicConfig(c), state: r.state, entries: r.taken ?? 0, live: r.live_json ? JSON.parse(r.live_json) : null }; }) });
+  return json({ cups: rows.results.map(r => { const c = JSON.parse(r.config_json) as CupConfig; return { ...publicConfig(c), state: r.state, entries: r.taken ?? 0, live: r.live_json ? JSON.parse(r.live_json) : null, promoted: !!r.promoted }; }) });
 }
 
 async function cupDetail(env: AuthEnv, slug: string): Promise<Response> {
@@ -243,6 +245,11 @@ async function liveCup(env: AuthEnv, slug: string) {
 }
 
 const PUBLIC_VIEWS: Record<string, (env: AuthEnv, slug: string) => Promise<Response>> = {
+  async calendar(env, slug) {
+    const r = await env.DB.prepare("SELECT id, name, state, config_json FROM cups WHERE slug = ?").bind(slug).first<{ id: string; name: string; state: string; config_json: string }>();
+    if (!r || !["scheduled", "registration", "closed", "check-in"].includes(r.state)) return fail(404, "no-cup");
+    return new Response(calendarOf(r.id, r.name, JSON.parse(r.config_json) as CupConfig), { headers: { "Content-Type": "text/calendar; charset=utf-8", "Content-Disposition": `attachment; filename="${slug}.ics"` } });
+  },
   async bracket(env, slug) {
     const cup = await liveCup(env, slug);
     if (!cup) return fail(404, "no-cup");
@@ -282,4 +289,35 @@ async function friends(env: AuthEnv, req: Request, cup: CupRow): Promise<Respons
       FROM f JOIN players p ON p.id = f.id LEFT JOIN registrations r ON r.cup_id = ?2 AND r.player_id = p.id
       ORDER BY r.state IS NULL, won DESC, p.name LIMIT 100`).bind(s.playerId, cup.id).all<{ me: number; name: string | null; state: string | null; finish: string | null; sc_bought: number | null; won: number }>();
   return json({ friends: rows.results.map(r => ({ me: !!r.me, name: r.name || "Player", entered: !!r.state && !["refunded", "no-show"].includes(r.state), state: r.state, finish: r.finish, won: r.won })) });
+}
+
+/* ---------- reminders and "your cup" ---------- */
+
+/** RFC 5545: the cup as one event, with an alarm when check-in opens. Times in UTC; calendars show local time. */
+export function calendarOf(cupId: string, name: string, c: CupConfig, origin = "https://playcity.ng"): string {
+  const t = (ms: number) => new Date(ms).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
+  const url = `${origin}/cup/?c=${encodeURIComponent(c.slug)}`;
+  const before = Math.max(1, Math.round((c.startsAt - c.checkInOpensAt) / 60_000));
+  return ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//playcity//Whot Cup//EN", "CALSCALE:GREGORIAN", "METHOD:PUBLISH",
+    "BEGIN:VEVENT", `UID:${cupId}@playcity`, `DTSTAMP:${t(Date.now())}`, `DTSTART:${t(c.startsAt)}`, `DTEND:${t(c.mustEndBy)}`,
+    `SUMMARY:${esc(name)}`, `DESCRIPTION:${esc(`Check in from ${before} minutes before the start, or your seat goes to the waitlist. ${url}`)}`, `URL:${url}`,
+    "BEGIN:VALARM", `TRIGGER:-PT${before}M`, "ACTION:DISPLAY", `DESCRIPTION:${esc(`${name}: check-in is open`)}`, "END:VALARM",
+    "END:VEVENT", "END:VCALENDAR", ""].join("\r\n");
+}
+
+/** The signed-in player's cups still to come or in play, soonest first: what the home page points them back to. */
+export async function myCups(env: AuthEnv, req: Request): Promise<Response> {
+  const s = await currentSession(env, req);
+  if (!s) return fail(401, "signed-out");
+  const rows = await env.DB.prepare(`SELECT c.slug, c.name, c.state, c.live_json, json_extract(c.config_json, '$.startsAt') AS starts_at,
+      json_extract(c.config_json, '$.checkInOpensAt') AS check_in_opens_at, json_extract(c.config_json, '$.startsAt') - json_extract(c.config_json, '$.checkInCloseBeforeStartSec') * 1000 AS check_in_closes_at,
+      r.state AS entry, r.checked_in_at
+    FROM registrations r JOIN cups c ON c.id = r.cup_id
+    WHERE r.player_id = ? AND c.state IN ('registration', 'closed', 'check-in', 'running') AND r.state IN ('entered', 'waitlist', 'seated', 'playing')
+    ORDER BY starts_at LIMIT 5`).bind(s.playerId).all<{ slug: string; name: string; state: string; live_json: string | null; starts_at: number; check_in_opens_at: number; check_in_closes_at: number; entry: string; checked_in_at: number | null }>();
+  return json({ cups: rows.results.map(r => ({
+    slug: r.slug, name: r.name, state: r.state, startsAt: r.starts_at, checkInOpensAt: r.check_in_opens_at, checkInClosesAt: r.check_in_closes_at,
+    entry: r.entry, checkedIn: !!r.checked_in_at, live: r.live_json ? JSON.parse(r.live_json) : null,
+  })) });
 }

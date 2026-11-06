@@ -19,7 +19,7 @@ import {
    POST  cups              new, from a template or another cup             GET     audit    (any staff)
    GET   cups/:id                             POST   templates             GET|PUT staff    (owner)
    PUT   cups/:id          save a draft       DELETE templates/:id         DELETE  staff/:player (owner)
-   POST  cups/:id/publish | unpublish | countersign (finance) | cancel
+   POST  cups/:id/publish | unpublish | countersign (finance) | cancel | pause | promote { on }
    DELETE cups/:id         a draft that was never published
 
    Every write is audited in the same transaction as the change. */
@@ -30,7 +30,7 @@ const MAX_BODY = 32 * 1024;
 interface CupRow {
   id: string; slug: string; name: string; state: string; config_json: string; config_hash: string | null; version: number;
   published_at: number | null; published_by: string | null; countersigned_by: string | null;
-  created_by: string; created_at: number; updated_by: string; updated_at: number;
+  created_by: string; created_at: number; updated_by: string; updated_at: number; promoted: number;
 }
 
 export async function consoleRoute(req: Request, env: ConsoleEnv, path: string): Promise<Response | null> {
@@ -69,6 +69,7 @@ export async function consoleRoute(req: Request, env: ConsoleEnv, path: string):
     if (p[2] === "unpublish" && m === "POST") return unpublish(env, u, cup, body);
     if (p[2] === "cancel" && m === "POST") return cancel(env, u, cup, body);
     if (p[2] === "pause" && m === "POST") return pause(env, u, cup, body);
+    if (p[2] === "promote" && m === "POST") return promote(env, u, cup, body);
     if (p[2] === "live" && m === "GET") return json({ live: await env.CUP.getByName(cup.id).status() });
   }
   if (p[0] === "templates") {
@@ -137,7 +138,7 @@ function cupView(c: CupRow, now: number) {
     id: c.id, slug: c.slug, name: c.name, state: c.state, version: c.version, config, configHash: c.config_hash,
     publishedAt: c.published_at, publishedBy: c.published_by, countersignedBy: c.countersigned_by,
     createdBy: c.created_by, createdAt: c.created_at, updatedBy: c.updated_by, updatedAt: c.updated_at,
-    frozen: isFrozen(c.state, config, now),
+    frozen: isFrozen(c.state, config, now), promoted: !!c.promoted,
   };
 }
 
@@ -292,6 +293,19 @@ async function pause(env: ConsoleEnv, u: ConsoleUser, cup: CupRow, b: Json): Pro
   await env.CUP.getByName(cup.id).pause(on);
   await auditStatement(env, u.playerId, on ? "cup.pause" : "cup.resume", `cup:${cup.id}`, undefined, undefined).run();
   return json({ live: await env.CUP.getByName(cup.id).status() });
+}
+
+/* The home page banner: on or off at any time while the cup is published. A display switch, so it isn't frozen with
+   the settings and doesn't change the cup's version (an open editor stays current). Audited like everything else. */
+async function promote(env: ConsoleEnv, u: ConsoleUser, cup: CupRow, b: Json): Promise<Response> {
+  if (!["scheduled", "registration", "closed", "check-in", "running"].includes(cup.state)) return fail(409, cup.state === "draft" ? "publish-first" : "already-over");
+  const on = b.on === true;
+  await env.DB.batch([
+    env.DB.prepare("UPDATE cups SET promoted = ? WHERE id = ? AND promoted <> ?").bind(on ? 1 : 0, cup.id, on ? 1 : 0),
+    auditStatement(env, u.playerId, on ? "cup.home-banner.on" : "cup.home-banner.off", `cup:${cup.id}`, { promoted: !!cup.promoted }, { promoted: on }, true),
+  ]);
+  const fresh = await env.DB.prepare("SELECT * FROM cups WHERE id = ?").bind(cup.id).first<CupRow>();
+  return json({ cup: cupView(fresh!, Date.now()) });
 }
 
 /** What the public cup page shows before the field is known: the expected field's main-draw pay and prizes. */
