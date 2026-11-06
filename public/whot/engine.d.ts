@@ -16,6 +16,7 @@ export const SHAPES: string[];
 export const DECK_SIZE: number;
 export const LOG_KEEP: number;
 export function rand(n: number): number;
+export function clumps(cards: Card[], after?: Card): number;
 export function say(s: Game, msg: string, kind?: string): void;
 export function newGame(seats: { name: string; type: "human" | "cpu" }[], starter: number): Game;
 export function play(s: Game, ids: number | number[], shape?: string): Result;

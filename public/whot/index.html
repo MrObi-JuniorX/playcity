@@ -445,6 +445,10 @@ body:has(#game:not([hidden])) #app{max-width:1060px}
 .arena .seat-name{font:700 .9rem/1.15 var(--font-display); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:150px}
 .seat-sub{display:flex; align-items:center; gap:5px; font-size:.74rem; color:var(--muted); white-space:nowrap}
 .seat-sub .count{font:500 .95rem var(--font-mono); color:var(--text)}
+.seat-sub .reconn{color:var(--accent); animation:reconn 1.6s ease-in-out infinite}
+@keyframes reconn{50%{opacity:.45}}
+@media (prefers-reduced-motion: reduce){.seat-sub .reconn{animation:none}}
+.avatar.away{opacity:.55; filter:grayscale(.6)}
 .seat-sub .last{background:var(--accent); color:var(--accent-ink); font-weight:800; font-size:.66rem; border-radius:5px; padding:0 4px}
 .seat .wave{display:none; width:60px; height:16px}
 .seat.talking .wave{display:block}

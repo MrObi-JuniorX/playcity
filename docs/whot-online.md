@@ -6,7 +6,7 @@ Whot for 2 to 4 at a table where every seat is either a person or the computer, 
 
 What was already good:
 - **A clean engine.** It is a pure state machine (`newGame`, `play`, `market`, `aiMove`) with no DOM in it, and every effect is recorded as an event (`draw`, `play`, `reshuffle`). That made it possible to run the engine unchanged on a server and replay its events as animation on every screen.
-- **Fair shuffling.** Fisher–Yates with a crypto random source, then same-number cards spread apart.
+- **Fair shuffling.** Fisher–Yates with a crypto random source, then same-number cards spread apart (replaced since: see "Shuffling" below).
 - **Careful rules.** The rules cover penalty stacking, partial blocks of pick-3, the check-up defence, playing several cards of one number at once, stalemate when the market runs dry, and refilling the market from played cards.
 - **Pass-and-play privacy.** Hands stay hidden behind a "Show my cards" screen.
 
@@ -65,11 +65,46 @@ Flick Football already worked this way: a challenger knocks, the host is told, a
 |---|---|
 | Open a table | Your seat is yours. The other seats are computer seats, open to ask for. |
 | You leave (Leave, then Leave) or press Watch instead | You stand first, so the computer takes your cards at once. |
-| You drop on your own turn (reload, tunnel, phone call) | Your turn is held for 10 s ("Waiting for Ada to reconnect…"). Come back in time and nothing happened. |
-| You drop on someone else's turn | The computer holds your cards. When this browser reconnects, you get the seat back automatically, unless someone else has taken it. |
-| You go idle on your turn | After 45 s the computer makes one move for you. After 2 timeouts in a row your seat goes back to the computer and you become a watcher. The clock only runs when 2 or more people are seated. |
+| You lose your connection (reload, tunnel, weak signal, phone call) | Your seat is **held for 60 s**. It keeps your name, shows "offline", and nobody else can take it. The computer covers your turns, but the first of them waits 15 s for you ("Waiting for Ada to reconnect… 12s"). Back in time: nothing happened. |
+| You come back after the hold | The seat has the computer's name, but it is still yours: this browser takes it back automatically unless someone else has sat down. |
+| Your phone lost signal but its socket never closed | The table reads the time of your last ping (pings never wake it). After 40 s of silence the connection counts as lost, not as you ignoring the clock, so it never costs you strikes. |
+| You reconnect before the table noticed you dropped | The new connection takes over your seat at once and the old one is closed (4011). Nobody else sees a thing. |
+| You go idle on your turn (still connected) | After 45 s the computer makes one move for you. After 2 timeouts in a row your seat goes back to the computer and you become a watcher. The clock only runs when 2 or more people are seated. |
 | Nobody seated | The table pauses ("Take a seat to carry on"). |
 | Everyone gone | The table is deleted 10 minutes after the last person leaves, so a host who switched apps to send the link (phones drop the connection within seconds) still finds it, and so does the friend. Someone arriving for any seat gets a computer seat nobody has a claim on before the absent host's own. |
+
+### Staying connected on a poor network (the browser)
+
+- **Dead sockets are found.**
+  - The page pings every 10 s. If nothing at all comes back within 6 s of a ping, the socket is dead even if it says it is open, so the page drops it and connects again. A connection attempt that hangs for 8 s is dropped too.
+  - Coming back to the tab, or the network coming back, checks at once.
+- **Reconnecting keeps going.**
+  - Backoff runs from 0.5 s doubling to 15 s, with jitter so a table does not retry in step. It waits for the network while the device says it is offline.
+  - It keeps trying for 10 minutes, as long as the table keeps itself, before going back to the setup screen. Before, it gave up after about 22 s and dropped you on the setup screen.
+- **What you see.**
+  - "Reconnecting… your seat is kept for you." on your screen.
+  - A move made while disconnected is not sent, and says so (it used to lock the screen for 6 s).
+  - Others see your seat greyed out and marked "offline".
+- **Another tab.** Opening the same table in another tab moves the seat there; the old tab says so and leaves.
+- **Measured** in the browser, through a proxy that black-holes the player's traffic without closing the socket (a phone losing signal):
+  - The player's screen says "Reconnecting…" after about 16 s.
+  - When the signal is back, they are in their seat again about 0.1 s later.
+  - The other player never saw them leave.
+
+### Shuffling
+
+The earlier shuffle was Fisher–Yates followed by a pass of random swaps that pushed same-number cards at most 3 apart. Measured over 20,000 deals, it had three problems:
+- **Hands depended on the table size.** Hands are dealt round the table, so one player's cards sit 2, 3 or 4 apart in the deck.
+  - A fair deal gives 0.636 same-number pairs per 5-card hand.
+  - The swap pass gave 0.47 with 2 players, 0.43 with 3, and **0.75 with 4**, plus more double-Whot hands (7.0% against 6.1%).
+- **No clear definition.** The swap pass stopped wherever it stopped, so there was no exact statement of which decks it made, or how often.
+- **Slow.** It was 5× slower than a plain shuffle and used one crypto call per random number, thousands per deal.
+
+Now (`engine.js`):
+1. **Hands come from a uniform shuffle.** Every order of the 54 cards is equally likely. Measured: 0.631, 0.637 and 0.634 pairs per hand for 2, 3 and 4 players.
+2. **The market is uniform among orders with no two same-number cards side by side** (`shuffleMarket`, rejection sampling). The rest of the deck after the deal, and every reshuffle of played cards, is shuffled again until no neighbours match. That includes the seam with the cards still in the market. Every allowed order stays exactly as likely as every other. If no such order exists (three 2s and a 7), the order with the fewest neighbours wins.
+3. **The start card** is the first ordinary card from the top. Specials turned up on the way go back into the market at random, no longer all to the bottom.
+4. **Random numbers come from crypto in batches** of 256. A deal is about 0.04 to 0.06 ms and takes 1 to 3 crypto calls.
 
 ### Midstream: from a game against the computer to an online table
 
@@ -122,7 +157,12 @@ Computer turns cost nothing extra: they run inside the person's move that trigge
 - `public/whot/engine.d.ts`: types for the Worker. It is never uploaded (`public/.assetsignore`).
 - `public/whot/index.html`, `public/whot/app.js`: the original screens and animations, now drawing either a local game or the table's view.
 - `src/whot.ts`: the `WhotTable` Durable Object (binding `WHOT`, migration `v2`).
-- `test/worker/whot.test.ts`: 22 tests.
+- `test/worker/whot.test.ts`: the table tests listed below, plus the poor-network tests:
+  - a dropped seat held under its name, kept from strangers and link holders, with one wait on the next turn;
+  - the hold running out with the claim kept;
+  - a reconnect replacing a socket that still looks open;
+  - a silent connection at the turn clock (no strike, not "away");
+  - a deliberate leave keeping nothing.
   - the table: dealing, computer turns, nobody ever sent a hidden card, turn and legality checks, leaving and reclaiming, the reconnect grace, standing up, watchers, seeded and tampered games, the idle clock, clean-up, code collisions, next round and tally;
   - the ask flow: request, notify, accept, decline, cooldown, auto-accept, nobody to ask, wrong key, no leaks to watchers;
   - `/api/open` and its cache.
@@ -131,7 +171,8 @@ Computer turns cost nothing extra: they run inside the person's move that trigge
   - views hold only your cards;
   - face-down draws line up with the next view;
   - handing over a game;
-  - a single random source.
+  - a single random source;
+  - shuffling: hands as fair as a fair deck at every table size; no same-number neighbours in the market; every allowed market order equally likely, seam included; the fewest clumps when none-free is impossible; batched crypto.
 
 ## Known limits and next steps
 

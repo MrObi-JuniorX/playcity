@@ -30,7 +30,7 @@ const setup={count:2,seats:[
 let vis=null;     // the Public/Private and Share control in the top bar (shared/share.js)
 const net={on:false,ws:null,code:null,you:null,seats:[],out:[],listed:false,lister:false,tally:null,round:0,watching:0,
   queue:[],pumping:false,pre:null,dl:0,dlTurn:-1,retry:0,closing:false,create:null,sit:false,shownRound:-1,
-  lobby:null,lobbyKey:'',ping:null,state:'',watchdog:null,
+  lobby:null,lobbyKey:'',ping:null,state:'',watchdog:null,retryT:null,downSince:0,rx:0,pingAt:0,probeAt:0,
   key:'',trusted:false,asks:[],asking:null,seenAsks:new Set(),wasAsking:false};
 const baseTitle=document.title;
 
@@ -481,6 +481,7 @@ async function animate(events,pre,tok,fast){
 function act(a){
   if(!net.on){perform(()=>a.t==='play'?play(G,a.ids,a.shape):market(G)); return;}
   if(ui.busy||!net.ws) return;
+  if(net.ws.readyState!==1){toast('Reconnecting… your seat is kept. Try again in a moment.'); probe(true); return;}   // never sent, so nothing is lost
   const pre={src:{}};
   ui.sel.forEach(id=>{const el=document.querySelector('#hand .card[data-id="'+id+'"]'); if(el) pre.src[id]=rectOf(el);});
   net.pre=pre; ui.busy=true; render();
@@ -592,6 +593,7 @@ function seatPlan(){
   const P={1:['top'],2:['left','right'],3:['left','top','right']}[others.length]||[];
   return [{i:base,pos:'bottom',me:v!==null}].concat(others.map((i,k)=>({i,pos:P[k],me:false})));
 }
+const heldSeat=i=>{const s=net.on&&net.seats[i]; return !!(s&&s.until&&s.until>Date.now());};
 function renderSeats(){
   const left=clockLeft();
   $('#seats').innerHTML=seatPlan().map(({i,pos,me})=>{
@@ -602,11 +604,12 @@ function renderSeats(){
     const talking=voice.talking.has(seatVid(i));
     const backs=me?'':Array.from({length:Math.min(shown,7)},()=>backHTML()).join('')+(shown>7?'<span class="more">+'+(shown-7)+'</span>':'');
     const clock=active&&left!==null&&p.type==='human'&&left<=20?'<span class="clock'+(left<=8?' low':'')+'">0:'+String(left).padStart(2,'0')+'</span>':'';
-    const sit=net.on&&net.you===null&&p.type==='cpu'?'<button class="sit-btn" type="button" data-sit="'+i+'"'+(net.asking?' disabled':'')+'>'+(canSitNow()?'Sit here':'Ask to sit')+'</button>':'';
+    const held=heldSeat(i);       // their connection dropped: the seat is kept for them, so nobody can sit here
+    const sit=net.on&&net.you===null&&p.type==='cpu'&&!held?'<button class="sit-btn" type="button" data-sit="'+i+'"'+(net.asking?' disabled':'')+'>'+(canSitNow()?'Sit here':'Ask to sit')+'</button>':'';
     const initial=(p.name.trim()[0]||'?').toUpperCase();
-    const kind=p.type==='cpu'&&net.on?'open':'';   // the CPU badge on the avatar already says computer
+    const kind=held?'<span class="reconn" title="Reconnecting. The seat is kept for them, and the computer plays for them meanwhile.">offline</span>':p.type==='cpu'&&net.on?'open':'';   // the CPU badge on the avatar already says computer
     return '<div class="seat pos-'+pos+(active?' active':'')+(talking?' talking':'')+(me?' me':'')+'" data-seat="'+i+'">'+
-      '<div class="avatar s'+(i%4)+'">'+esc(initial)+(p.type==='cpu'?'<i class="cpu">CPU</i>':'')+'</div>'+
+      '<div class="avatar s'+(i%4)+(held?' away':'')+'">'+esc(initial)+(p.type==='cpu'&&!held?'<i class="cpu">CPU</i>':'')+'</div>'+
       '<div class="seat-info"><span class="seat-name">'+esc(me&&p.name!=='You'?p.name+' (you)':p.name)+'</span>'+
         '<span class="seat-sub">'+(me?'Your seat':'<b class="count">'+shown+'</b> card'+(shown===1?'':'s'))+(shown===1&&!me?'<span class="last">1!</span>':'')+(kind&&!me?' · '+kind:'')+clock+'</span>'+
         '<canvas class="wave" width="120" height="32" aria-hidden="true"></canvas></div>'+
@@ -639,6 +642,7 @@ function renderStatus(){
   let txt='', cls='banner';
   if(ui.phase==='shuffle'){txt='Shuffling the deck…';}
   else if(G.over){txt=G.players[G.winner].name+' checked up!';}
+  else if(net.on&&net.state==='down'){txt=(net.you!==null||net.wasSeated?'Reconnecting… your seat is kept for you.':'Reconnecting…'); cls+=' alert';}
   else if(ui.note){txt=ui.note;}
   else if(ui.hint){txt=ui.hint; cls+=' hint';}
   else if(G.pending&&myTurn(v)){
@@ -648,7 +652,8 @@ function renderStatus(){
       :'Each 5 you play blocks 3 of it. Block less and you pick the rest.')+clk; cls+=' alert';
   }
   else if(nobodySeated()){txt='Table paused. Take a seat to carry on.';}
-  else if(net.on&&net.grace&&net.grace.seat===G.current&&net.grace.until>Date.now()){txt='Waiting for '+net.grace.name+' to reconnect…';}
+  else if(net.on&&net.grace&&net.grace.seat===G.current&&net.grace.until>Date.now()){txt='Waiting for '+net.grace.name+' to reconnect… '+Math.max(0,Math.ceil((net.grace.until-Date.now())/1000))+'s';}
+  else if(heldSeat(G.current)){txt=cur.name+' is reconnecting. The computer plays for them meanwhile.';}
   else if(cur.type==='cpu'){txt=cur.name+' is thinking…';}
   else if(net.on&&G.current!==v){txt=(G.hold?cur.name+' '+vb(cur.name,'plays','play')+' again.':'Waiting for '+cur.name+'…')+clk;}
   else if(G.hold){txt=(humansIdx().length>1&&!net.on?cur.name+' '+vb(cur.name,'plays','play')+' again.':'Play again, or go to market.')+clk;}
@@ -947,17 +952,76 @@ function joinTable(code,sit,key){
   net.create=null; net.key=key||keyStore.get(code);
   connect(code,{create:false,sit:sit!==false});
 }
+/* Staying connected on a poor network.
+   - Every PING_MS the browser pings (answered by the server without waking the table, which reads the time of the
+     last ping to tell a live player from a dead socket). If nothing at all comes back within DEAD_MS of a ping, the
+     socket is dead even if it says it is open (common on phones after losing signal): drop it and connect again.
+   - Coming back to the tab, or the network coming back, checks the socket at once instead of waiting.
+   - Reconnecting backs off (0.5 s doubling to 15 s, with jitter so a whole table does not retry in step), waits for
+     the network while the device says it is offline, and keeps trying for as long as the table keeps an empty seat
+     for us (GIVE_UP_MS) before going back to the setup screen. The seat is held by the table meanwhile. */
+const PING_MS=10000, DEAD_MS=6000, CONNECT_MS=8000, GIVE_UP_MS=10*60*1000;   // CONNECT_MS: an attempt that has not opened by then is hung
+function liveTick(ws){
+  if(net.ws!==ws||ws.readyState!==1) return;
+  const now=Date.now();
+  if(net.probeAt&&net.rx<net.probeAt&&now-net.probeAt>(net.probeMs||DEAD_MS)){dead(ws); return;}
+  if(now-net.pingAt>=PING_MS){
+    try{ws.send('ping');}catch(e){/* closing */}
+    net.pingAt=now; if(!net.probeAt||net.rx>=net.probeAt){net.probeAt=now; net.probeMs=DEAD_MS;}
+  }
+}
+/* Check the connection now: ping and expect an answer quickly, or reconnect straight away if it is already down. */
+function probe(now){
+  if(!net.on||net.closing) return;
+  const ws=net.ws;
+  if(ws&&ws.readyState===1){
+    try{ws.send('ping');}catch(e){/* closing */}
+    net.pingAt=net.probeAt=Date.now(); net.probeMs=4000;
+    return;
+  }
+  if(ws&&ws.readyState===0&&Date.now()-net.openAt<2000) return;   // just started connecting
+  if(ws&&ws.readyState===0){dead(ws); net.retry=0; clearTimeout(net.retryT); connect(net.code,{create:false,sit:false}); return;}   // a hung attempt: start afresh
+  if(now||net.state==='down'){net.retry=0; clearTimeout(net.retryT); connect(net.code,{create:false,sit:false});}
+}
+function dead(ws){
+  if(net.ws!==ws) return;
+  ws.onclose=null; ws.onopen=null; try{ws.close(4000,'no answer');}catch(e){/* ignore */}
+  dropped(ws);
+}
+/* The connection went: show it, and come back as soon as we can. */
+function dropped(ws){
+  clearInterval(net.ping);
+  if(net.ws!==ws||!net.on) return;
+  if(net.state!=='down'){net.state='down'; net.downSince=net.downSince||Date.now(); net.wasSeated=net.you!==null; if(G) render();}
+  if(net.pre){net.pre=null; ui.busy=false; clearTimeout(net.watchdog); if(G) render();}   // the move may not have arrived: the next state says
+  updateLobby();
+  if(Date.now()-net.downSince>GIVE_UP_MS){toast('Lost the connection to the table.'); toSetup(); return;}
+  const base=Math.min(15000,500*2**Math.min(net.retry++,5));
+  const ms=navigator.onLine===false?15000:base*(0.5+Math.random()*0.5);   // offline: the 'online' event retries sooner
+  clearTimeout(net.retryT);
+  net.retryT=setTimeout(()=>{if(net.on&&net.ws===ws) connect(net.code,{create:false,sit:false});},ms);
+}
 function connect(code,o){
+  clearTimeout(net.retryT);
   if(net.ws){net.ws.onclose=null; try{net.ws.close();}catch(e){/* ignore */}}
-  Object.assign(net,{on:true,code,closing:false,state:'connecting',sit:!!o.sit});
+  Object.assign(net,{on:true,code,closing:false,state:net.state==='down'?'down':'connecting',sit:!!o.sit});
   const q=new URLSearchParams({name:myName(),id:myId()});
   if(o.create) q.set('create','1');
   if(o.sit) q.set('sit','1');
   if(net.key) q.set('k',net.key);
   const ws=new WebSocket(wsBase()+'/ws/whot/'+code+'?'+q);
-  net.ws=ws;
-  ws.onopen=()=>{net.state='up'; net.retry=0; clearInterval(net.ping); net.ping=setInterval(()=>{if(ws.readyState===1) ws.send('ping');},25000); if(G) renderTop();};
+  net.ws=ws; net.openAt=Date.now();
+  clearTimeout(net.openT);
+  net.openT=setTimeout(()=>{if(net.ws===ws&&ws.readyState===0) dead(ws);},CONNECT_MS);     // a poor network can leave an attempt hanging
+  ws.onopen=()=>{
+    if(net.ws!==ws) return;
+    clearTimeout(net.openT);
+    net.state='up'; net.retry=0; net.downSince=0; net.rx=net.pingAt=Date.now(); net.probeAt=0;
+    clearInterval(net.ping); net.ping=setInterval(()=>liveTick(ws),2500);
+    if(G) render();
+  };
   ws.onmessage=e=>{
+    if(net.ws===ws) net.rx=Date.now();
     if(e.data==='pong') return;
     let m; try{m=JSON.parse(e.data);}catch(err){return;}
     if(m.t==='empty'){if(net.create) ws.send(JSON.stringify(net.create)); return;}
@@ -973,8 +1037,8 @@ function connect(code,o){
     net.queue.push(m); pump();
   };
   ws.onclose=e=>{
-    clearInterval(net.ping);
     if(net.ws!==ws||net.closing) return;
+    clearInterval(net.ping);
     if(net.offline&&net.offline.G){stayOffline(); return;}       // never got online: carry on offline
     if(e.code===4009&&net.create){connect(newCode(),{create:true}); return;}            // code taken: draw another
     if(e.code===4004||e.code===4010){
@@ -983,15 +1047,16 @@ function connect(code,o){
       if(G){toast(msg); toSetup();} else{$('#onlineNote').textContent=msg; history.replaceState(null,'',location.pathname);}
       return;
     }
-    // dropped: come back quietly; the table hands the seat back to this browser
-    net.state='down'; if(G) renderTop();
-    if(net.retry++<8) setTimeout(()=>{if(net.on&&net.ws===ws) connect(code,{create:false,sit:false});},Math.min(8000,600*net.retry));
-    else{toast('Lost the connection to the table.'); toSetup();}
+    if(e.code===4011){              // this browser opened the table again somewhere else, which now has the seat
+      net.on=false; net.ws=null; toast('This table is open in another tab or window, so you play there.',4200); toSetup(); return;
+    }
+    // dropped (4008: the table stopped hearing us): come back quietly; the table kept the seat for this browser
+    dropped(ws);
   };
   history.replaceState(null,'','?t='+code);
 }
 function leaveOnline(){
-  net.closing=true; clearInterval(net.ping); clearTimeout(net.watchdog); voice.stop();
+  net.closing=true; clearInterval(net.ping); clearTimeout(net.watchdog); clearTimeout(net.retryT); clearTimeout(net.openT); net.downSince=0; voice.stop();
   if(net.ws) try{netSend({t:'stand'}); net.ws.close(1000,'leave');}catch(e){/* ignore */}   // standing first: no reconnect grace
   Object.assign(net,{on:false,ws:null,code:null,you:null,seats:[],out:[],queue:[],pre:null,dl:0,create:null,shownRound:-1,state:'',key:'',trusted:false,asks:[],asking:null,wasAsking:false});
   clearInterval(titleFlash); titleFlash=null; document.title=baseTitle; renderAsks();
@@ -1005,7 +1070,7 @@ function onNope(m){
     net.create.seed=undefined; netSend(net.create); return;
   }
   if(net.pre){net.pre=null; ui.busy=false;}
-  const msgs={'not-your-turn':'Not your turn yet.','stale':'The table moved on. Try again.','seat-taken':'Someone just took that seat.','seated':'You already have a seat.',
+  const msgs={'not-your-turn':'Not your turn yet.','stale':'The table moved on. Try again.','seat-taken':'Someone just took that seat.','seat-held':'That seat is kept for a player who is reconnecting.','seated':'You already have a seat.',
     'cooldown':'You asked a moment ago. Give it a little while.','busy':'Several people are asking already. Try again in a moment.','asking':''};
   if(m.reason!=='asking') toast(msgs[m.reason]||'That move was not allowed.');
   if(G) render();
@@ -1024,7 +1089,7 @@ async function applyMsg(m,backlog){
   if(net.offline&&net.offline.G){clearTimeout(net.offlineT); net.offline=null;}
   const was=net.you;
   net.mine=m.mine||null; if(!net.mine) net.welcomed='';
-  Object.assign(net,{you:m.you,seats:m.seats,out:m.out||[],listed:m.listed,lister:m.lister,tally:m.tally,round:m.round,watching:m.watching,
+  Object.assign(net,{you:m.you,seats:(m.seats||[]).map(x=>x.held?Object.assign({},x,{until:m.recv+x.held}):x),out:m.out||[],listed:m.listed,lister:m.lister,tally:m.tally,round:m.round,watching:m.watching,
     grace:m.grace?{seat:m.grace.seat,name:m.grace.name,until:m.recv+m.grace.left}:null,
     trusted:!!m.trusted,asking:m.asking?{seat:m.asking.seat,until:m.recv+m.asking.left}:null,
     asks:(m.asks||[]).map(a=>({rid:a.rid,name:a.name,seat:a.seat,until:m.recv+a.left}))});
@@ -1194,7 +1259,7 @@ vis=PCVis.mount($('#visSlot'),{
 });
 vis.hidden=true;
 
-addEventListener('online',()=>{if(G) renderTop();}); addEventListener('offline',()=>{if(G) renderTop();});
+addEventListener('online',()=>{probe(true); if(G) renderTop();}); addEventListener('offline',()=>{if(G) renderTop();});
 
 /* Hold to talk: the button (touch or mouse), or hold Space on a keyboard. */
 const ptt=$('#pttBtn');
@@ -1278,11 +1343,11 @@ document.addEventListener('keydown',e=>{
 window.addEventListener('resize',()=>{if(G) renderHand();});   // the number of rows depends on the width
 // the turn clock: redraw once a second while one is running
 setInterval(()=>{
-  if(net.on&&G&&!ui.busy&&clockLeft()!==null){renderSeats(); renderStatus();}
+  if(net.on&&G&&!ui.busy&&(clockLeft()!==null||net.grace||net.seats.some(x=>x.until))){renderSeats(); renderStatus();}
   if(net.on&&(net.asking||net.asks.length)) renderAsks();      // the countdowns
 },1000);
 document.addEventListener('visibilitychange',()=>{
-  if(!document.hidden&&net.on&&net.ws&&net.ws.readyState>1) connect(net.code,{create:false,sit:false});
+  if(!document.hidden&&net.on) probe(true);       // back from another app: is the socket really alive?
   if(net.on) noticeAsks();
   if(!document.hidden&&!$('#setup').hidden) refreshTables();
 });

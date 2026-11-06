@@ -162,11 +162,12 @@ function host(h) {
   return R;
 }
 
-/* Guest: knock on a room. h: { name, onWaiting(), onKnocking(hostName), onLink(link, hostName), onLeft(), onClose(code) }
-   onWaiting: nobody holds the code right now (the host may be switching apps); the knock goes in when they are back. */
+/* Guest: knock on a room. h: { name, rj?, onWaiting(), onKnocking(hostName), onLink(link, hostName), onLeft(code), onClose(code) }
+   onWaiting: nobody holds the code right now (the host may be switching apps); the knock goes in when they are back.
+   rj: this tab's rejoin token for the code, passed to the host with the knock so a dropped player is known again. */
 function join(code, h) {
   let link = null, closed = false;
-  const ws = new WebSocket(wsUrl(`/ws/room/${code}?role=guest&name=${encodeURIComponent(h.name || 'Player')}`));
+  const ws = new WebSocket(wsUrl(`/ws/room/${code}?role=guest&name=${encodeURIComponent(h.name || 'Player')}${h.rj ? '&rj=' + h.rj : ''}`));
   keepAlive(ws);
   ws.onmessage = e => {
     if (e.data === 'pong') return;
@@ -186,7 +187,10 @@ function join(code, h) {
     if (link && link.via === 'p2p' && e.code !== 4001) { link.onP2pLost = () => { link.close(); link = null; h.onLeft && h.onLeft(e.code); }; return; }
     if (link) { link.close(); link = null; h.onLeft && h.onLeft(e.code); } else h.onClose && h.onClose(e.code);
   };
-  return { close() { closed = true; if (link) link.close(); try { ws.close(1000); } catch (e) { /* ignore */ } } };
+  return {
+    get state() { return ws.readyState; },       // 0 while still connecting: on a poor network an attempt can hang there
+    close() { closed = true; if (link) link.close(); try { ws.close(1000); } catch (e) { /* ignore */ } }
+  };
 }
 
 /* Spectator: listen to a table. h: { onMessage(m), onClose(code) } */

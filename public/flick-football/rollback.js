@@ -144,7 +144,7 @@ function createSession(opts) {
     const adv = S.tick - 1 - S.remoteTick, skew = adv - S.theirAdv;
     const rate = skew > 2 ? 0.92 : skew < -2 ? 1.04 : 1;
     while (S.acc >= TICK / rate && ran < 5) {
-      if (S.tick - S.remoteTick > MAX_ROLLBACK) { S.stalled += TICK; S.acc = 0; break; }
+      if (S.tick - S.remoteTick > MAX_ROLLBACK) { S.stalled += S.acc; S.acc = 0; break; }   // seconds of wall time, whatever the frame rate
       S.stalled = 0;
       S.acc -= TICK / rate;
       const t = S.tick, inp = localInput(t);

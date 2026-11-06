@@ -12,11 +12,15 @@ import { DurableObject } from "cloudflare:workers";
    ({"t":"waiting"}) and is let in when the host is back; the host reconnects with the same code and its own host
    id (hid), which also replaces a stale connection the room still thinks is open. Only a deliberate leave (close
    code 1000, or 1001 when the tab closes) sends everyone away.
+   A guest can carry a rejoin token (rj): a random id their tab keeps for this code. The room only passes it on with
+   the knock, so a host whose opponent dropped can tell that player knocking again and let them straight back in.
+   The same token on a new connection also replaces the guest's old one, as hid does for the host: a phone that lost
+   signal often leaves a socket that never says it closed, and it must not keep the guest's place as "busy".
    Nothing is stored. All state lives in the WebSocket attachments, so the room hibernates between messages and an
    idle room costs nothing. Pings are answered by the runtime without waking it. */
 
 type Role = "host" | "guest" | "watch";
-interface Peer { role: Role; id: string; name: string; in: boolean; hid?: string }
+interface Peer { role: Role; id: string; name: string; in: boolean; hid?: string; rj?: string; gone?: boolean }   // gone: replaced, already reported
 
 const HID = /^[A-Za-z0-9]{6,32}$/;
 const LEFT = new Set([1000, 1001]);   // close codes that mean the host meant to go
@@ -46,8 +50,17 @@ export class Room extends DurableObject<Env> {
     const [client, server] = Object.values(pair);
 
     const qh = url.searchParams.get("hid") || "", hid = HID.test(qh) ? qh : undefined;
+    const qr = url.searchParams.get("rj") || "", rj = role === "guest" && HID.test(qr) ? qr : undefined;
     const host = this.host();
     const same = role === "host" && !!host && !!hid && this.peer(host).hid === hid;   // the host again, on a fresh connection
+    // The same guest tab on a new connection: the old one goes now, and the host hears so before the new knock.
+    if (rj) for (const g of this.peers("guest")) {
+      const p = this.peer(g);
+      if (p.rj !== rj) continue;
+      g.serializeAttachment({ ...p, in: false, gone: true });
+      try { g.close(4011, "replaced"); } catch { /* already gone */ }
+      host?.send(JSON.stringify({ t: "peer-left", gid: p.id, wasIn: p.in }));
+    }
     let reject: [number, string] | null = null;
     if (role === "host" && host && !same) reject = [4009, "taken"];
     if (role === "guest" && this.peers("guest").length >= GUEST_LIMIT) reject = [4010, "busy"];
@@ -55,7 +68,7 @@ export class Room extends DurableObject<Env> {
     if (role === "watch" && this.peers("watch").length >= WATCH_LIMIT) reject = [4010, "full"];
 
     this.ctx.acceptWebSocket(server, [role]);
-    server.serializeAttachment({ role, id, name, in: role === "host", hid: role === "host" ? hid : undefined } satisfies Peer);
+    server.serializeAttachment({ role, id, name, in: role === "host", hid: role === "host" ? hid : undefined, rj } satisfies Peer);
     if (reject) {
       server.close(reject[0], reject[1]);
     } else if (role === "host") {
@@ -70,7 +83,7 @@ export class Room extends DurableObject<Env> {
       for (const g of this.peers("guest")) {
         const p = this.peer(g);
         if (p.in) continue;
-        server.send(JSON.stringify({ t: "knock", gid: p.id, name: p.name }));
+        server.send(JSON.stringify({ t: "knock", gid: p.id, name: p.name, rj: p.rj }));
         g.send(JSON.stringify({ t: "knocking", host: name }));
       }
       if (this.peers("watch").length) this.watchers(true);     // they need a keyframe from this connection
@@ -80,7 +93,7 @@ export class Room extends DurableObject<Env> {
     } else if (role === "watch") {
       this.watchers(true);
     } else {
-      host.send(JSON.stringify({ t: "knock", gid: id, name }));
+      host.send(JSON.stringify({ t: "knock", gid: id, name, rj }));
       server.send(JSON.stringify({ t: "knocking", host: this.peer(host).name }));
     }
     return new Response(null, { status: 101, webSocket: client });
@@ -139,7 +152,7 @@ export class Room extends DurableObject<Env> {
       }
     } else if (me.role === "watch") {
       this.watchers(false);
-    } else {
+    } else if (!me.gone) {
       this.host()?.send(JSON.stringify({ t: "peer-left", gid: me.id, wasIn: me.in }));
     }
     try { ws.close(code === 1005 ? 1000 : code, reason); } catch { /* already closed */ }

@@ -52,6 +52,39 @@ describe("invite room", () => {
     expect(host.got.some(m => m.t === "offer")).toBe(false);
   });
 
+  it("passes a guest's rejoin token with the knock, so the host knows a player coming back, and drops a bad one", async () => {
+    const host = await open("/ws/room/RJNAA?role=host&name=Ada&hid=hostidrj01");
+    await host.next("hosting");
+    await open("/ws/room/RJNAA?role=guest&name=Sam&rj=samtabtoken1");
+    expect((await host.next("knock")).rj).toBe("samtabtoken1");
+    await open("/ws/room/RJNAA?role=guest&name=Eve&rj=bad%20token!");
+    await host.until(() => host.got.filter(m => m.t === "knock").length === 2);
+    expect(host.got.find(m => m.t === "knock" && m.name === "Eve").rj).toBeUndefined();
+    // the host's connection drops and comes back: the waiting knocks are replayed with their tokens
+    host.ws.close(4000, "app switch");
+    const again = await open("/ws/room/RJNAA?role=host&name=Ada&hid=hostidrj01");
+    await again.next("hosting");
+    await again.until(() => again.got.filter(m => m.t === "knock").length === 2);
+    expect(again.got.filter(m => m.t === "knock").map(m => m.rj)).toContain("samtabtoken1");
+  });
+
+  it("a guest back on a new connection replaces the old one, even one that still looks open, and the host hears first", async () => {
+    const host = await open("/ws/room/RJNBB?role=host&name=Ada&hid=hostidrj02");
+    await host.next("hosting");
+    const old = await open("/ws/room/RJNBB?role=guest&name=Sam&rj=samtabtoken2");
+    const k1 = await host.next("knock");
+    host.send({ t: "accept", gid: k1.gid });
+    await old.next("accepted");
+    const back = await open("/ws/room/RJNBB?role=guest&name=Sam&rj=samtabtoken2");   // not turned away as busy
+    await host.until(() => host.got.filter(m => m.t === "knock").length === 2);
+    const order = host.got.filter(m => m.t === "knock" || m.t === "peer-left").map(m => m.t + (m.t === "peer-left" ? ":" + m.wasIn : ""));
+    expect(order).toEqual(["knock", "peer-left:true", "knock"]);
+    await old.until(() => old.closed() !== null);
+    expect(old.closed()!.code).toBe(4011);
+    expect(back.closed()).toBe(null);
+    expect(host.got.filter(m => m.t === "peer-left").length).toBe(1);            // reported once, not again on the close
+  });
+
   it("knocking on a code nobody holds waits, and knocks as soon as the host opens it", async () => {
     const guest = await open("/ws/room/ZZZZZ?role=guest&name=Sam");
     await guest.next("waiting");
