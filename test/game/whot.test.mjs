@@ -230,3 +230,71 @@ describe("shuffling", () => {
     } finally { spy.mockRestore(); }
   });
 });
+
+/* A table with chosen hands and top card, so each check-up case can be set up exactly. Specs are [shape, number]. */
+function rigged(handSpecs, topSpec) {
+  const deck = W.buildDeck(), used = new Set();
+  const take = ([shape, n]) => { const c = deck.find(x => x.shape === shape && x.n === n && !used.has(x.id)); used.add(c.id); return c; };
+  const g = W.newGame(seats(handSpecs.length), 0);
+  g.players.forEach((p, i) => { p.hand = handSpecs[i].map(take); });
+  g.discard = [take(topSpec)]; g.shape = topSpec[0];
+  g.market = deck.filter(c => !used.has(c.id));
+  Object.assign(g, { current: 0, pending: null, checkup: null, hold: false, events: [], log: [] });
+  return g;
+}
+const idsOf = (g, seat, ...specs) => specs.map(([shape, n]) => g.players[seat].hand.find(c => c.shape === shape && c.n === n).id);
+
+describe("checking up", () => {
+  it("a pick 2 passed on with a 2 brings the player who checked up back in: they pick 1 and play goes on", () => {
+    const g = rigged([[["circle", 2]], [["square", 2], ["star", 3]], [["cross", 3], ["cross", 7]]], ["circle", 7]);
+    expect(W.play(g, idsOf(g, 0, ["circle", 2])).ok).toBe(true);
+    expect(g.checkup).toEqual({ player: 0 });
+    expect(W.play(g, idsOf(g, 1, ["square", 2])).ok).toBe(true);
+    expect(g.over).toBe(false);
+    expect(g.checkup).toBe(null);
+    expect(g.players[0].hand.length).toBe(1);                 // picked 1
+    expect(g.pending).toEqual({ n: 2, amount: 4 });           // the pick 2 is still travelling, now to seat 2
+    expect(g.current).toBe(2);
+  });
+
+  it("blocking a whole pick 3 with a 5 does NOT bring the player back in: they win", () => {
+    const g = rigged([[["circle", 5]], [["square", 5], ["star", 3]], [["cross", 3], ["cross", 7]]], ["circle", 7]);
+    W.play(g, idsOf(g, 0, ["circle", 5]));
+    expect(g.checkup).toEqual({ player: 0 });
+    expect(g.pending).toEqual({ n: 5, amount: 3 });
+    expect(W.play(g, idsOf(g, 1, ["square", 5])).ok).toBe(true);
+    expect(g.over).toBe(true);
+    expect(g.winner).toBe(0);
+    expect(g.players[0].hand.length).toBe(0);                 // no card picked
+    expect(g.players[1].hand.length).toBe(1);                 // and the defender picked nothing either
+  });
+
+  it("blocking only part of a pick 3 still loses to the check up, and the defender picks the rest", () => {
+    const g = rigged([[["circle", 5], ["triangle", 5]], [["cross", 5], ["star", 3]], [["cross", 3], ["cross", 7]]], ["circle", 7]);
+    W.play(g, idsOf(g, 0, ["circle", 5], ["triangle", 5]));
+    expect(g.pending).toEqual({ n: 5, amount: 6 });
+    W.play(g, idsOf(g, 1, ["cross", 5]));
+    expect(g.over).toBe(true);
+    expect(g.winner).toBe(0);
+    expect(g.players[1].hand.length).toBe(1 + 3);             // 1 left + picked 3
+  });
+
+  it("picking up the penalty loses to the check up", () => {
+    for (const num of [2, 5]) {
+      const g = rigged([[["circle", num]], [["square", 3], ["star", 3]], [["cross", 3], ["cross", 7]]], ["circle", 7]);
+      W.play(g, idsOf(g, 0, ["circle", num]));
+      expect(W.market(g).ok).toBe(true);
+      expect(g.over).toBe(true);
+      expect(g.winner).toBe(0);
+    }
+  });
+
+  it("an ordinary block of a pick 3 (no check up) is unchanged: the game goes on", () => {
+    const g = rigged([[["circle", 5], ["star", 3]], [["square", 5], ["star", 4]], [["cross", 3], ["cross", 7]]], ["circle", 7]);
+    W.play(g, idsOf(g, 0, ["circle", 5]));
+    expect(g.checkup).toBe(null);
+    W.play(g, idsOf(g, 1, ["square", 5]));
+    expect(g.over).toBe(false);
+    expect(g.pending).toBe(null);
+  });
+});
