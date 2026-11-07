@@ -212,11 +212,14 @@ export function play(s,cardIds,askShape){
       if(s.pending){
         const rem=s.pending.amount-3*k;
         s.pending=null;
-        if(rem<=0){say(s,p.name+' blocked the pick 3.','ok'); ckFail=!!ck;}
+        if(rem<=0) say(s,p.name+' blocked the pick 3.','ok');
         else{
           say(s,p.name+' blocked '+(3*k)+' and '+vb(p.name,'picks','pick')+' '+rem+'.','warn');
-          drawCards(s,me,rem); ckWin=!!ck;
+          drawCards(s,me,rem);
         }
+        // Blocking is not a defence against a check up: only a 2 passed on brings the checker back in (ckFail, below).
+        // Whether the block was whole or partial, the player who checked up wins.
+        ckWin=!!ck;
       }else{s.pending={n:5,amount:3*k}; say(s,p.name+' '+vb(p.name,'says','say')+' pick '+(3*k)+'!','hit');}
       advance(s); break;
     }

@@ -32,6 +32,7 @@ const net={on:false,ws:null,code:null,you:null,seats:[],out:[],listed:false,list
   queue:[],pumping:false,pre:null,dl:0,dlTurn:-1,retry:0,closing:false,create:null,sit:false,shownRound:-1,
   lobby:null,lobbyKey:'',ping:null,state:'',watchdog:null,retryT:null,downSince:0,rx:0,pingAt:0,probeAt:0,
   key:'',trusted:false,asks:[],asking:null,seenAsks:new Set(),wasAsking:false,
+  move:null,quietNopeUntil:0,           // move: the last move sent that the table has not answered yet (see sendMove)
   cup:null,cupMeta:null,cupEnd:0};     // cup: a Whot Cup table ({slug,code,token,back}); cupMeta: the table's cup state
 const baseTitle=document.title;
 
@@ -138,7 +139,7 @@ function rulesHTML(){
   '</ul>'+
   '<p class="rules-p"><b>Play several at once.</b> Tap cards that share a number, in the order you want to play them. The first one must fit the top card, the rest can be any shape, and the last one sets the shape in play. Specials add up: three 2s make pick 6, three 5s make pick 9, two 8s suspend two players, two 14s make everyone else pick 2 (then you play again).</p>'+
   '<p class="rules-p"><b>Blocking pick three.</b> Each 5 you play blocks 3 cards of the penalty. If three 5s were sent and you block with one, you pick the other six. Block with as many 5s as were sent and nobody picks.</p>'+
-  '<p class="rules-p"><b>Check up</b> by playing your last card. If it is a 2 or a 5, the next player gets one chance to defend. A defence means you pick 1 and the game goes on. If they pick up the penalty instead, you win.</p>'+
+  '<p class="rules-p"><b>Check up</b> by playing your last card. If it is a 2 or a 5, the next player gets one chance to defend. Only passing a pick 2 on with another 2 is a defence: you pick 1 and the game goes on. Blocking a pick 3 with a 5 does not bring you back in, and neither does picking up the penalty: either way, you win.</p>'+
   '<p class="rules-p"><b>Loser:</b> whoever holds the highest points when someone checks up (add up the numbers on your cards; Whot counts 20). A tie is broken by the most cards.</p>'+
   '<p class="rules-p"><b>Market refill:</b> if the market can’t cover a pick, or it runs low, or the played pile gets big, the played cards are shuffled and added to the market.</p>'+
   '<p class="rules-p"><b>Online:</b> computer seats are open seats. Anyone at the table can take one and carry on with its cards. Leave, or drop your connection, and the computer plays your cards until you come back. Each turn has a 45 second clock.</p>';
@@ -488,13 +489,48 @@ async function animate(events,pre,tok,fast){
 function act(a){
   if(!net.on){perform(()=>a.t==='play'?play(G,a.ids,a.shape):market(G)); return;}
   if(ui.busy||!net.ws) return;
-  if(net.ws.readyState!==1){toast('Reconnecting… your seat is kept. Try again in a moment.'); probe(true); return;}   // never sent, so nothing is lost
   const pre={src:{}};
   ui.sel.forEach(id=>{const el=document.querySelector('#hand .card[data-id="'+id+'"]'); if(el) pre.src[id]=rectOf(el);});
+  net.move={msg:Object.assign({},a,{turn:G.turns}),pre,tries:0,at:Date.now()};
+  if(net.ws.readyState!==1){          // not connected right now: keep the move and send it as soon as the table is back
+    toast('Reconnecting… your move will be sent when you are back.'); probe(true); return;
+  }
   net.pre=pre; ui.busy=true; render();
-  netSend(Object.assign({},a,{turn:G.turns}));
+  sendMove();
+}
+/* Sending a move on a poor network.
+   The table answers every move (the new state, or a refusal). If nothing comes back, the move is sent again instead of
+   leaving the card stuck until the player taps it again: a few times while the socket still looks open, and once more
+   right after a reconnect if the table says it is still our turn (resumeMove).
+   Sending a move twice is safe: every move names the turn it was made on, and the table refuses a turn it has already
+   played ("stale" or "not-your-turn"). onNope stays quiet about those refusals for a moment after a resend. */
+const MOVE_RETRY_MS=2000, MOVE_TRIES=3, MOVE_KEEP_MS=20000;   // 3 sends over 6 s, as long as the screen used to stay locked
+function sendMove(isResend){
+  const mv=net.move; if(!mv) return;
+  mv.tries++;
+  if(isResend||mv.tries>1) net.quietNopeUntil=Date.now()+4000;
+  netSend(mv.msg);
   clearTimeout(net.watchdog);
-  net.watchdog=setTimeout(()=>{if(net.pre===pre){net.pre=null; ui.busy=false; render();}},6000);   // never stay locked
+  net.watchdog=setTimeout(moveSilent,MOVE_RETRY_MS);
+}
+function moveSilent(){
+  const mv=net.move; if(!mv) return;
+  if(mv.tries>=MOVE_TRIES){           // still nothing: free the screen, but keep the move for a reconnect (resumeMove)
+    net.pre=null; ui.busy=false; if(G) render(); return;
+  }
+  probe(false);                       // a dead socket is found within seconds and replaced, instead of waiting for the next ping
+  sendMove();
+}
+/* Back on the table with a fresh state: send the held move again if it never arrived and it is still our turn. */
+function resumeMove(){
+  const mv=net.move; if(!mv) return;
+  const stillOurTurn=!G.over&&net.you!==null&&G.current===net.you&&G.turns===mv.msg.turn;
+  if(!stillOurTurn){net.move=null; return;}     // the table moved on: the move did arrive, or the computer covered the turn
+  if(Date.now()-mv.at>MOVE_KEEP_MS){net.move=null; toast('That move was not sent. Tap again.'); return;}
+  if(!net.ws||net.ws.readyState!==1) return;
+  if(net.pre) return;                           // still waiting on a live connection (an unrelated update arrived): the timer above handles it
+  mv.tries=0; net.pre=mv.pre; ui.busy=true; render();
+  sendMove(true);
 }
 function humansIdx(){return G.players.map((p,i)=>p.type==='human'?i:-1).filter(i=>i>=0);}
 function viewer(){
@@ -655,13 +691,14 @@ function renderStatus(){
   let txt='', cls='banner';
   if(ui.phase==='shuffle'){txt='Shuffling the deck…';}
   else if(G.over){txt=G.players[G.winner].name+' checked up!';}
-  else if(net.on&&net.state==='down'){txt=(net.you!==null||net.wasSeated?'Reconnecting… your seat is kept for you.':'Reconnecting…'); cls+=' alert';}
+  else if(net.on&&net.state==='down'){txt=(net.you!==null||net.wasSeated?'Reconnecting… your seat is kept for you.'+(net.move?' Your move goes through when you are back.':''):'Reconnecting…'); cls+=' alert';}
   else if(ui.note){txt=ui.note;}
   else if(ui.hint){txt=ui.hint; cls+=' hint';}
   else if(G.pending&&myTurn(v)){
     const ckn=G.checkup?G.players[G.checkup.player].name+' is out of cards. ':'';
     txt=ckn+'Pick '+G.pending.amount+' is coming. '+(G.pending.n===2
       ?'Play 2s to pass it on, or pick up.'
+      :G.checkup?'Blocking with a 5 will not bring them back in.'
       :'Each 5 you play blocks 3 of it. Block less and you pick the rest.')+clk; cls+=' alert';
   }
   else if(net.cup&&net.you===null){txt='Watching '+(net.cupMeta?net.cupMeta.delay:3)+' moves behind the table. No hidden cards are shown.';}
@@ -1080,13 +1117,14 @@ function connect(code,o){
 function leaveOnline(){
   net.closing=true; clearInterval(net.ping); clearTimeout(net.watchdog); clearTimeout(net.retryT); clearTimeout(net.openT); net.downSince=0; voice.stop();
   if(net.ws) try{netSend({t:'stand'}); net.ws.close(1000,'leave');}catch(e){/* ignore */}   // standing first: no reconnect grace
-  Object.assign(net,{on:false,ws:null,code:null,you:null,seats:[],out:[],queue:[],pre:null,dl:0,create:null,shownRound:-1,state:'',key:'',trusted:false,asks:[],asking:null,wasAsking:false});
+  Object.assign(net,{on:false,ws:null,code:null,you:null,seats:[],out:[],queue:[],pre:null,move:null,dl:0,create:null,shownRound:-1,state:'',key:'',trusted:false,asks:[],asking:null,wasAsking:false});
   clearInterval(titleFlash); titleFlash=null; document.title=baseTitle; renderAsks();
   updateLobby();
   history.replaceState(null,'',location.pathname);
 }
 function onNope(m){
-  clearTimeout(net.watchdog);
+  if((m.reason==='stale'||m.reason==='not-your-turn')&&Date.now()<net.quietNopeUntil) return;   // refusing our resent copy: the first one already got there
+  clearTimeout(net.watchdog); net.move=null;
   if(m.reason==='bad-create'&&net.create&&net.create.seed){
     toast('Could not carry this game over, so a fresh round is dealt.');
     net.create.seed=undefined; netSend(net.create); return;
@@ -1139,9 +1177,10 @@ async function applyMsg(m,backlog){
     const mine=net.you!==null?new Set(G.players[net.you].hand.map(c=>c.id)):new Set();
     ui.sel=keep.filter(id=>mine.has(id));
     if(!net.pre) ui.busy=false;
-    render(); afterState(); return;
+    render(); afterState(); resumeMove(); return;
   }
   if(m.kind==='deal'){
+    net.move=null;
     ui.token++;
     if(ui.sheet==='result') closeSheet();
     G=hydrate(m.v);
@@ -1155,6 +1194,7 @@ async function applyMsg(m,backlog){
   if(mineMove){net.pre=null; clearTimeout(net.watchdog);}
   pre.mkt=G.market.length;
   G=hydrate(m.v);
+  if(net.move&&(mineMove||G.turns!==net.move.msg.turn)) net.move=null;   // answered, or the turn has passed on its own
   await animate(m.ev||[],pre,tok,fast);
   if(tok!==ui.token) return;
   render(); afterState();

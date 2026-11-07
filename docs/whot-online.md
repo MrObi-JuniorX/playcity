@@ -8,6 +8,7 @@ What was already good:
 - **A clean engine.** It is a pure state machine (`newGame`, `play`, `market`, `aiMove`) with no DOM in it, and every effect is recorded as an event (`draw`, `play`, `reshuffle`). That made it possible to run the engine unchanged on a server and replay its events as animation on every screen.
 - **Fair shuffling.** Fisher–Yates with a crypto random source, then same-number cards spread apart (replaced since: see "Shuffling" below).
 - **Careful rules.** The rules cover penalty stacking, partial blocks of pick-3, the check-up defence, playing several cards of one number at once, stalemate when the market runs dry, and refilling the market from played cards.
+  - **Check up.** A player who plays their last card as a 2 or a 5 has checked up, and the next player gets one chance to defend. Only passing a pick 2 on with another 2 brings the checker back in (they pick 1 and play goes on). Blocking a pick 3 with a 5, in whole or in part, does not: the checker wins. Picking up the penalty also loses.
 - **Pass-and-play privacy.** Hands stay hidden behind a "Show my cards" screen.
 
 What stood in the way of online play:
@@ -83,8 +84,12 @@ Flick Football already worked this way: a challenger knocks, the host is told, a
   - It keeps trying for 10 minutes, as long as the table keeps itself, before going back to the setup screen. Before, it gave up after about 22 s and dropped you on the setup screen.
 - **What you see.**
   - "Reconnecting… your seat is kept for you." on your screen.
-  - A move made while disconnected is not sent, and says so (it used to lock the screen for 6 s).
   - Others see your seat greyed out and marked "offline".
+- **A tapped card is not lost.** Tapping Play or Market keeps the move until the table answers it (`net.move`, `sendMove` in `app.js`). Before, a move lost in flight left the card stuck for 6 s and the player had to tap again.
+  - **No answer in 2 s:** the move is sent again, up to 3 sends over 6 s, and the connection is checked at the same time so a dead socket is replaced quickly. After the third send the screen is freed, but the move is kept.
+  - **Tapped while disconnected:** the move is kept ("Your move goes through when you are back") instead of being refused.
+  - **After a reconnect:** if the table's fresh state says it is still your turn on the same turn number, the move is sent once more. If the turn has moved on (the move did arrive, or the computer covered it), it is dropped. A move older than 20 s is dropped with "That move was not sent. Tap again."
+  - **Why sending twice is safe:** every move names the turn it was made on, and the table refuses a turn it has already played (`stale` / `not-your-turn`). The page stays quiet about those refusals for 4 s after a resend, so a duplicate never shows as an error.
 - **Another tab.** Opening the same table in another tab moves the seat there; the old tab says so and leaves.
 - **Measured** in the browser, through a proxy that black-holes the player's traffic without closing the socket (a phone losing signal):
   - The player's screen says "Reconnecting…" after about 16 s.
@@ -166,7 +171,7 @@ Computer turns cost nothing extra: they run inside the person's move that trigge
   - the table: dealing, computer turns, nobody ever sent a hidden card, turn and legality checks, leaving and reclaiming, the reconnect grace, standing up, watchers, seeded and tampered games, the idle clock, clean-up, code collisions, next round and tally;
   - the ask flow: request, notify, accept, decline, cooldown, auto-accept, nobody to ask, wrong key, no leaks to watchers;
   - `/api/open` and its cache.
-- `test/game/whot.test.mjs`: 5 tests:
+- `test/game/whot.test.mjs`: the engine tests, including the check-up cases (a 2 brings the checker back in; a whole or partial 5 block does not; picking up loses; an ordinary block with no check up is unchanged). The first group is:
   - the 300-game soak;
   - views hold only your cards;
   - face-down draws line up with the next view;
