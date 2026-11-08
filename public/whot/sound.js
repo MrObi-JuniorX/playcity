@@ -15,7 +15,7 @@ function init(){
   noise=ctx.createBuffer(1,ctx.sampleRate*2,ctx.sampleRate);
   const d=noise.getChannelData(0); for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1;
 }
-['pointerdown','keydown','touchstart'].forEach(e=>addEventListener(e,init,{passive:true}));
+['pointerdown','keydown','touchstart'].forEach(e=>addEventListener(e,()=>{init(); warm();},{passive:true}));
 
 const T=()=>ctx.currentTime;
 const ok=(k,gap)=>{const n=performance.now(); if(last[k]&&n-last[k]<gap) return false; last[k]=n; return true;};
@@ -75,12 +75,25 @@ function pickVoice(){
   // Whot is Nigeria's card game: a Nigerian English voice where the device has one, then any English voice.
   return vs.find(v=>/en[-_]NG/i.test(v.lang))||vs.find(v=>/en[-_]GB/i.test(v.lang))||vs.find(v=>/^en/i.test(v.lang))||vs[0];
 }
-if('speechSynthesis' in window) speechSynthesis.onvoiceschanged=()=>{voice=pickVoice();};
+if('speechSynthesis' in window){ speechSynthesis.onvoiceschanged=()=>{voice=pickVoice();}; voice=pickVoice(); }
+/* Get the speech engine ready before the game needs it. Some browsers load their voices and engine only on the
+   first line, which can hold that line back several seconds, and iOS only lets speech start from a tap. So on the
+   first tap (and again when a game starts) speak a silent, empty line: after that the first real line is instant. */
+let warmed=false;
+function warm(){
+  if(warmed||!('speechSynthesis' in window)) return;
+  warmed=true;
+  try{
+    voice=voice||pickVoice();
+    const u=new SpeechSynthesisUtterance(' '); u.volume=0; if(voice) u.voice=voice;
+    speechSynthesis.speak(u);
+  }catch(e){ warmed=false; }
+}
 let speaking=0;
 function say(text,prio){
   if(!cfg.voice||!cfg.vol||!('speechSynthesis' in window)||document.hidden) return;
   if(speechSynthesis.speaking&&(prio||1)<speaking) return;   // a big moment is not cut off by a small one
-  speechSynthesis.cancel();
+  speechSynthesis.cancel(); speechSynthesis.resume();         // Chrome can leave the queue paused
   const u=new SpeechSynthesisUtterance(text);
   voice=voice||pickVoice(); if(voice) u.voice=voice;
   u.rate=1.08; u.pitch=1.05; u.volume=Math.min(1,cfg.vol*1.1);
@@ -90,7 +103,7 @@ function say(text,prio){
 
 export const Sound={
   fx(name){ if(!cfg.fx||!cfg.vol||document.hidden) return; init(); if(!ctx||ctx.state!=='running') return; FX[name]&&FX[name](); },
-  say,
+  say, warm,
   settings:()=>Object.assign({},cfg),
   /* Lower the game while someone is talking on the walkie-talkie. */
   duck(on){ if(ducked===on) return; ducked=on; if(out) out.gain.setTargetAtTime(cfg.vol*(on?.3:1),T(),.08); },
