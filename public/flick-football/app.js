@@ -170,7 +170,7 @@ function rebuild() { if (V && mode === 'setup') makeGame(); }
 async function startMatch(fresh) {
   enterFullscreen();
   const btn = $('#startBtn');
-  S.init(); S.playIntro(7, 2); btn.disabled = true; btn.textContent = 'Loading…';
+  S.init(); ATM.warm(); S.playIntro(7, 2); btn.disabled = true; btn.textContent = 'Loading…';
   try {
     await viewReady;
     try { await Promise.race([document.fonts.load('700 58px "Big Shoulders Display"'), new Promise(r => setTimeout(r, 1200))]); } catch (e) { /* font is optional */ }
@@ -1638,8 +1638,9 @@ function govern(dt) {
 
 /* Browsers only allow sound after a tap or key. Start it on the first one, wherever it lands. */
 // Sound starts on the first tap or key, and the 270 KB kick-off sting is fetched then rather than on page load.
-['pointerdown', 'keydown'].forEach(ev => document.addEventListener(ev, () => { S.init(); S.preloadIntro('intro.mp3'); }, { once: true, capture: true }));
+['pointerdown', 'keydown'].forEach(ev => document.addEventListener(ev, () => { S.init(); ATM.warm(); S.preloadIntro('intro.mp3'); }, { once: true, capture: true }));
 ATM.getG = () => G;
+ATM.isHuman = t => ctl[t] !== 'ai';
 
 /* Setup controls are wired first so they work even while graphics load. */
 buildSetup(); paintShot(); makeGame();
