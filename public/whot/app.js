@@ -299,6 +299,30 @@ function commentate(ev){
   if(line) Sound.say(line,prio);
 }
 
+/* Nudges: when a person takes a while over their turn, the commentator sometimes hurries them along.
+   Never the computer, never someone who is reconnecting, at most a few times a turn, and never over another line. */
+const nudge={key:null,next:0,n:0,clock:false};
+function nudgeLine(nm,pass){
+  if(pass) return oneOf([nm+', your turn. Take the phone.','Pass it over to '+nm+'.']);
+  if(nm==='You') return oneOf(['Your turn!','Oya, your turn. Play something!','We are waiting on you.','Take your time. But not all day!']);
+  return oneOf([nm+', it is your turn.','Oya '+nm+', play something!','We are waiting on '+nm+'.',nm+' '+vb(nm,'is','are')+' thinking hard about this one.','Come on '+nm+', the table is waiting!']);
+}
+function nudgeTick(){
+  if(!G||G.over||ui.phase!=='play'||ui.busy||document.hidden){nudge.key=null; return;}
+  const p=G.players[G.current];
+  if(p.type!=='human'||heldSeat(G.current)||(net.on&&net.grace&&net.grace.seat===G.current)){nudge.key=null; return;}
+  const key=G.turns+':'+G.current, now=Date.now();
+  if(key!==nudge.key){Object.assign(nudge,{key,n:0,clock:false,next:now+12000+rand(8000)}); return;}
+  const left=clockLeft();
+  if(left!==null&&left<=10&&left>=5&&!nudge.clock){      // online turn clock running low
+    nudge.clock=true; Sound.say(p.name==='You'?'Hurry, the clock is running out!':oneOf([p.name+', the clock is ticking!','Hurry up, '+p.name+'!']),0.5); return;
+  }
+  if(now<nudge.next||nudge.n>=3) return;
+  nudge.n++; nudge.next=now+18000+rand(12000);
+  if(Math.random()<.3) return;                           // only sometimes
+  Sound.say(nudgeLine(p.name,needsPass()),0.5);
+}
+
 /* Check up: a full-screen moment with a bang before the results. Tap to skip. */
 function celebrate(){
   return new Promise(done=>{
@@ -1408,6 +1432,7 @@ document.addEventListener('keydown',e=>{
 window.addEventListener('resize',()=>{if(G) renderHand();});   // the number of rows depends on the width
 // the turn clock: redraw once a second while one is running
 setInterval(()=>{
+  nudgeTick();
   if(net.on&&G&&!ui.busy&&(clockLeft()!==null||net.grace||net.seats.some(x=>x.until))){renderSeats(); renderStatus();}
   if(net.cup&&G&&!G.over&&!ui.busy){renderTop(); renderSeats();}   // the table clock
   if(net.cup&&ui.sheet==='cupwait'&&net.cupMeta) cupWait(null);    // the deal countdown
