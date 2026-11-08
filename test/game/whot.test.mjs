@@ -245,15 +245,40 @@ function rigged(handSpecs, topSpec) {
 const idsOf = (g, seat, ...specs) => specs.map(([shape, n]) => g.players[seat].hand.find(c => c.shape === shape && c.n === n).id);
 
 describe("checking up", () => {
-  it("a pick 2 passed on with a 2 brings the player who checked up back in: they pick 1 and play goes on", () => {
-    const g = rigged([[["circle", 2]], [["square", 2], ["star", 3]], [["cross", 3], ["cross", 7]]], ["circle", 7]);
+  it("check up on a pick 2, defended with another 2: the checker is back in with just the 4, not 1 + 4", () => {
+    const g = rigged([[["circle", 2]], [["square", 2], ["star", 3]]], ["circle", 7]);
     expect(W.play(g, idsOf(g, 0, ["circle", 2])).ok).toBe(true);
     expect(g.checkup).toEqual({ player: 0 });
     expect(W.play(g, idsOf(g, 1, ["square", 2])).ok).toBe(true);
     expect(g.over).toBe(false);
     expect(g.checkup).toBe(null);
-    expect(g.players[0].hand.length).toBe(1);                 // picked 1
-    expect(g.pending).toEqual({ n: 2, amount: 4 });           // the pick 2 is still travelling, now to seat 2
+    expect(g.players[0].hand.length).toBe(0);                 // no extra card handed over
+    expect(g.pending).toEqual({ n: 2, amount: 4 });           // the 4 comes straight back round to the checker
+    expect(g.current).toBe(0);
+    expect(W.market(g).ok).toBe(true);                        // and picking it up leaves them holding exactly 4
+    expect(g.players[0].hand.length).toBe(4);
+    expect(g.over).toBe(false);
+  });
+
+  it("check up on several 2s: the checker takes only the total passed back, nothing extra", () => {
+    const g = rigged([[["circle", 2], ["triangle", 2]], [["square", 2], ["star", 3]]], ["circle", 7]);
+    W.play(g, idsOf(g, 0, ["circle", 2], ["triangle", 2]));
+    expect(g.pending).toEqual({ n: 2, amount: 4 });
+    W.play(g, idsOf(g, 1, ["square", 2]));
+    expect(g.pending).toEqual({ n: 2, amount: 6 });
+    expect(g.players[0].hand.length).toBe(0);
+    W.market(g);
+    expect(g.players[0].hand.length).toBe(6);
+  });
+
+  it("with three players a defended check up gets no extra card either; the penalty goes to the next player", () => {
+    const g = rigged([[["circle", 2]], [["square", 2], ["star", 3]], [["cross", 3], ["cross", 7]]], ["circle", 7]);
+    W.play(g, idsOf(g, 0, ["circle", 2]));
+    W.play(g, idsOf(g, 1, ["square", 2]));
+    expect(g.over).toBe(false);
+    expect(g.checkup).toBe(null);
+    expect(g.players[0].hand.length).toBe(0);
+    expect(g.pending).toEqual({ n: 2, amount: 4 });
     expect(g.current).toBe(2);
   });
 

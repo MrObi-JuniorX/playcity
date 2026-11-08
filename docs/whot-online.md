@@ -8,7 +8,7 @@ What was already good:
 - **A clean engine.** It is a pure state machine (`newGame`, `play`, `market`, `aiMove`) with no DOM in it, and every effect is recorded as an event (`draw`, `play`, `reshuffle`). That made it possible to run the engine unchanged on a server and replay its events as animation on every screen.
 - **Fair shuffling.** Fisher–Yates with a crypto random source, then same-number cards spread apart (replaced since: see "Shuffling" below).
 - **Careful rules.** The rules cover penalty stacking, partial blocks of pick-3, the check-up defence, playing several cards of one number at once, stalemate when the market runs dry, and refilling the market from played cards.
-  - **Check up.** A player who plays their last card as a 2 or a 5 has checked up, and the next player gets one chance to defend. Only passing a pick 2 on with another 2 brings the checker back in (they pick 1 and play goes on). Blocking a pick 3 with a 5, in whole or in part, does not: the checker wins. Picking up the penalty also loses.
+  - **Check up.** A player who plays their last card as a 2 or a 5 has checked up, and the next player gets one chance to defend. Only passing a pick 2 on with another 2 brings the checker back in. They take only the penalty that was passed on, with no extra card: check up on a pick 2, get a 2 played on you, and you pick 4 (not 1 + 4). With three or more players the passed-on penalty goes to the next player as usual, and the checker holds no cards until it reaches them or they go to market. Blocking a pick 3 with a 5, in whole or in part, does not: the checker wins. Picking up the penalty also loses.
 - **Pass-and-play privacy.** Hands stay hidden behind a "Show my cards" screen.
 
 What stood in the way of online play:

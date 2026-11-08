@@ -248,8 +248,11 @@ export function play(s,cardIds,askShape){
   if(ck){
     if(ckWin){finish(s,ck.player); return {ok:true,cards,emptied:false};}
     if(ckFail){
-      drawCards(s,ck.player,1);
-      say(s,p.name+' defended it. '+s.players[ck.player].name+' '+vb(s.players[ck.player].name,'picks','pick')+' 1 and play goes on.','warn');
+      // The checker is back in the game and takes only the penalty that was passed on, when it reaches them. They are
+      // not handed an extra card for being defended against: in a two-player game they simply pick the passed-on 4
+      // (or 6, ...), and with three or more it travels round the table like any other penalty.
+      const checker=s.players[ck.player];
+      say(s,p.name+' defended it. '+checker.name+' '+vb(checker.name,'is','are')+' back in the game: pick '+s.pending.amount+' is coming.','warn');
     }
   }
   const emptyNow=p.hand.length===0;   // after any picks (a partial block can refill the hand)
