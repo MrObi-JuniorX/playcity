@@ -111,11 +111,9 @@ const LINES = {
   halftime: ["That's half-time. {A} {sa}, {B} {sb}.", 'The referee blows for half-time.'],
   fulltime: ["It's all over! {result}", "Full time. {result}"],
   miss: ['Missed the ball completely!', 'Oh, that was an air shot.'],
-  idle: ['Plenty of thought going into this one.', 'Taking their time over this.', 'The crowd waits.'],
-  nudge: ['{T}, your flick.', 'Come on {T}, the crowd is waiting!', 'Over to you, {T}.', '{T} still weighing it up.', 'Any time now, {T}.', "Let's get on with it, {T}!"],
-  arrange: ['{T} still setting up.', 'Ready when you are, {T}.', 'Come on {T}, press Ready!']
+  idle: ['Plenty of thought going into this one.', 'Taking their time over this.', 'The crowd waits.']
 };
-const PRIORITY = { goal: 5, owngoal: 5, red: 4, penalty: 4, halftime: 4, fulltime: 4, save: 3, post: 3, yellow: 2, foul: 2, kickoff: 2, secondhalf: 2, miss: 1, bigflick: 1, corner: 1, goalkick: 1, throw: 0, idle: 0, nudge: 0, arrange: 0 };
+const PRIORITY = { goal: 5, owngoal: 5, red: 4, penalty: 4, halftime: 4, fulltime: 4, save: 3, post: 3, yellow: 2, foul: 2, kickoff: 2, secondhalf: 2, miss: 1, bigflick: 1, corner: 1, goalkick: 1, throw: 0, idle: 0 };
 let speaking = null, lastLine = {}, lastSpoke = 0, voiceCache = null;
 function voice() {
   const ss = root.speechSynthesis; if (!ss) return null;
@@ -132,25 +130,9 @@ function fill(text, x) {
   if (!x2.result) x2.result = G.score[0] === G.score[1] ? `${a} and ${b} share it, ${G.score[0]} all.` : `${G.score[0] > G.score[1] ? a : b} win it, ${Math.max(...G.score)} ${Math.min(...G.score)}.`;
   return text.replace(/\{(\w+)\}/g, (_, k) => x2[k] !== undefined ? x2[k] : '');
 }
-/* Get the speech engine ready before kick-off. Some browsers load their voices and engine only on the first line,
-   which held the opening commentary back several seconds, and iOS only lets speech start from a tap. So on the
-   first tap (and on Kick off) speak a silent, empty line: after that the first real line is instant. */
-let warmed = false;
-A.warm = function () {
-  const ss = root.speechSynthesis; if (!ss || warmed) return;
-  warmed = true;
-  try {
-    const u = new SpeechSynthesisUtterance(' '); u.volume = 0;
-    const v = voice(); if (v) { u.voice = v; u.lang = v.lang; }
-    ss.speak(u);
-  } catch (e) { warmed = false; }
-};
-if (root.speechSynthesis) { try { root.speechSynthesis.getVoices(); } catch (e) { /* voices load later */ } }
-
 function say(kind, extra) {
   const ss = root.speechSynthesis, lvl = S.level('voice');
   if (!ss || !lvl || document.hidden) return;
-  if (ss.paused) ss.resume();                                                        // Chrome can leave the queue paused
   const p = PRIORITY[kind] || 0, now = performance.now();
   if (speaking && ss.speaking) { if (p <= speaking.p) return; ss.cancel(); }       // a goal talks over a throw-in
   if (p < 2 && now - lastSpoke < 4000) return;                                        // leave room between small lines
@@ -166,8 +148,7 @@ function say(kind, extra) {
 }
 
 /* ================= reacting to the match ================= */
-let prevPhase = null, readySince = 0, lastIdle = 0, nudgeAt = 12000;
-A.isHuman = () => true;                              // the app says which teams are people, so the computer is never nudged
+let prevPhase = null, readySince = 0, lastIdle = 0;
 A.event = function (e) {
   if (!S.ctx || S.isMuted()) return;
   const G = A.getG();
@@ -221,17 +202,7 @@ A.update = function (dt, G) {
     else if (G.mode === 'corner' && Math.random() < 0.35) later(rhythmClaps, 800);
   }
   if (G.phase === 'ready' && now - readySince > 11000 && organReady(60000) && Math.random() < dt * 0.3) playRiff(pick(['bounce', 'stroll']), pick([0, -3]), 0.1);
-  // a long think: sometimes the commentator hurries the player along by name (never the computer)
-  if (G.phase === 'ready' && now - readySince > nudgeAt) {
-    nudgeAt = now - readySince + rnd(16000, 26000);
-    const t = G.arrange ? G.arrange.team : G.turn;
-    if (now - lastIdle > 12000 && Math.random() < 0.7) {
-      lastIdle = now;
-      if (!A.isHuman(t)) say('idle');
-      else say(G.arrange ? 'arrange' : pick(['nudge', 'nudge', 'idle']), { T: G.names[t] });
-    }
-  }
-  if (G.phase !== 'ready') nudgeAt = rnd(10000, 15000);
+  if (G.phase === 'ready' && now - readySince > 14000 && now - lastIdle > 30000) { lastIdle = now; say('idle'); }
   prevPhase = G.phase;
 };
 
